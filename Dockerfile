@@ -1,10 +1,10 @@
 FROM rust:1.74.1-alpine as compile
 #FROM rust:1.74.1-bookworm as compile
-WORKDIR /usr/project
-COPY . .
 RUN apk add cmake make gcc musl-dev
 #RUN apt-get update && apt-get -y install cmake
 # RUN cargo build # --target x86_64-unknown-linux-gnu # debug
+WORKDIR /usr/project
+COPY . .
 RUN cargo build --release
 RUN cd util/zerorec && cargo build && cargo build --release && cd ../..
 RUN cd util/start && cargo build && cargo build --release && cd ../..
