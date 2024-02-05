@@ -4,10 +4,10 @@ WORKDIR /usr/project
 COPY . .
 RUN apk add cmake make gcc musl-dev
 #RUN apt-get update && apt-get -y install cmake
-RUN cargo build # --target x86_64-unknown-linux-gnu # debug
-RUN cargo build --release # --target x86_64-unknown-linux-gnu
-RUN cd util/zerorec && cargo build && cargo build --release && cd ..
-RUN cd util/start && cargo build && cargo build --release && cd ..
+# RUN cargo build # --target x86_64-unknown-linux-gnu # debug
+RUN cargo build --release
+RUN cd util/zerorec && cargo build && cargo build --release && cd ../..
+RUN cd util/start && cargo build && cargo build --release && cd ../..
 
 FROM alpine as debug
 #FROM scratch as debug
