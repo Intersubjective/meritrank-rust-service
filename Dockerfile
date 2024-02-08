@@ -16,11 +16,13 @@ COPY --from=compile /usr/project/target/debug/meritrank-rust-service meritrank-r
 COPY --from=compile /usr/project/util/zerorec/target/debug/zerorec zerorec
 COPY --from=compile /usr/project/util/start/target/debug/start start
 #COPY --from=compile /lib/x86_64-linux-gnu/libgcc_s.so.1 .
-# ENV RUST_SERVICE_PARALLEL=128
+COPY init.sh /srv/init.sh
+RUN chmod +x /srv/init.sh
 ENV RUST_SERVICE_URL=tcp://0.0.0.0:10234
 EXPOSE 10234
 ENV LD_LIBRARY_PATH=.
-ENTRYPOINT ["/srv/meritrank-rust-service"]
+ENTRYPOINT ["sh", "-c", "/srv/init.sh"]
+# ENTRYPOINT ["/srv/meritrank-rust-service"]
 
 FROM alpine as release
 #FROM scratch as release
@@ -29,8 +31,11 @@ COPY --from=compile /usr/project/target/release/meritrank-rust-service meritrank
 COPY --from=compile /usr/project/util/zerorec/target/release/zerorec zerorec
 COPY --from=compile /usr/project/util/start/target/release/start start
 #COPY --from=compile /lib/x86_64-linux-gnu/libgcc_s.so.1 .
+COPY init.sh /srv/init.sh
+RUN chmod +x /srv/init.sh
 ENV RUST_SERVICE_PARALLEL=128
 ENV RUST_SERVICE_URL=tcp://0.0.0.0:10234
 EXPOSE 10234
 ENV LD_LIBRARY_PATH=.
-ENTRYPOINT ["/srv/meritrank-rust-service"]
+ENTRYPOINT ["sh", "-c", "/srv/init.sh"]
+# ENTRYPOINT ["/srv/meritrank-rust-service"]
