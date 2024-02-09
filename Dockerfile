@@ -11,6 +11,7 @@ RUN cd util/start && cargo build && cargo build --release && cd ../..
 
 FROM alpine as debug
 #FROM scratch as debug
+RUN apk add bash
 WORKDIR /srv
 COPY --from=compile /usr/project/target/debug/meritrank-rust-service meritrank-rust-service
 COPY --from=compile /usr/project/util/zerorec/target/debug/zerorec zerorec
@@ -26,6 +27,7 @@ ENTRYPOINT ["sh", "-c", "/srv/init.sh"]
 
 FROM alpine as release
 #FROM scratch as release
+RUN apk add bash
 WORKDIR /srv
 COPY --from=compile /usr/project/target/release/meritrank-rust-service meritrank-rust-service
 COPY --from=compile /usr/project/util/zerorec/target/release/zerorec zerorec
