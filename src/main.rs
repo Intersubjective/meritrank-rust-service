@@ -29,7 +29,7 @@ lazy_static! {
         var("GRAVITY_NUM_WALK")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(100);
+            .unwrap_or(10000);
 
     static ref GRAVITY_NUM_WALK: usize =
         var("GRAVITY_NUM_WALK")
