@@ -130,6 +130,7 @@ fn main() {
         eprintln!("Top nodes are empty! Stop.");
         return;
     }
+    println!("{} top nodes", nodes.len());
 
     // delete old Zero edges
     delete_from_zero().expect("Cannot delete old edges from Zero!");

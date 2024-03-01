@@ -5,7 +5,7 @@ use lazy_static::lazy_static;
 use std::string::ToString;
 use crate::error::GraphManipulationError;
 use crate::graph::{GraphSingleton, NodeId, GRAPH};
-use crate::lib_graph::{MeritRank, MyGraph, Weight};
+use crate::lib_graph::{MeritRank, MeritRankError, MyGraph, Weight};
 use nng::{Aio, AioResult, Context, Message, Protocol, Socket};
 
 use itertools::Itertools;
@@ -41,7 +41,7 @@ lazy_static! {
         var("WEIGHT_MIN_LEVEL")
             .ok()
             .and_then(|s| s.parse::<Weight>().ok())
-            .unwrap_or(1.0);
+            .unwrap_or(0.1); // was: 1.0
 
     static ref EMPTY_RESULT: Vec<u8> = {
         const EMPTY_ROWS_VEC: Vec<(&str, &str, f64)> = Vec::new();
@@ -64,6 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
 
 fn main_sync() -> Result<(), Box<dyn std::error::Error + 'static>> {
     println!("Starting server at {}", *SERVICE_URL);
+    println!("NUM_WALK={}, GRAVITY_NUM_WALK={}", *NUM_WALK, *GRAVITY_NUM_WALK);
 
     let s = Socket::new(Protocol::Rep0)?;
     s.listen(&SERVICE_URL)?;
@@ -78,6 +79,7 @@ fn main_sync() -> Result<(), Box<dyn std::error::Error + 'static>> {
 
 fn main_async(parallel: usize) -> Result<(), Box<dyn std::error::Error + 'static>> {
     println!("Starting server at {}. PARALLEL={parallel}", *SERVICE_URL);
+    println!("NUM_WALK={}, GRAVITY_NUM_WALK={}", *NUM_WALK, *GRAVITY_NUM_WALK);
 
     let s = Socket::new(Protocol::Rep0)?;
 
@@ -717,14 +719,66 @@ impl GraphContext {
     }
 
     fn mr_beacons_global(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
+        let mut rank = self.get_rank()?;
         let mut graph = GRAPH.lock()?;
+        let node_names: HashMap<String, NodeId> =
+            graph.borrow_node_names().clone();
+        let node_ids: HashMap<NodeId, String> =
+            node_names
+                .clone() // ?
+                .into_iter()
+                .map(|(name, id)| (id, name))
+                .collect();
+        /*
         let my_graph = // self.borrow_graph(graph);
             match &self.context {
                 None => graph.borrow_graph(),
                 Some(ctx) => graph.borrow_graph1(ctx)
             };
+        */
+        let users: Vec<(String, NodeId)> =
+            node_names
+                .clone() // ?
+                .into_iter()
+                .filter(|(name, _)| name.starts_with("U")) // filter zero user?
+                .collect();
+        println!("got {} users", users.len());
+        if users.is_empty() {
+            return Ok(Vec::new());
+        }
 
-        let (_, edges) = my_graph.all(); // not optimal
+        users.iter().for_each(|(name, node_id)| {
+            println!("recalculation of {name} ...");
+            match rank.calculate(*node_id, *NUM_WALK) {
+                Err(err) =>
+                    println!("Error while recalculating {name} : {err}"),
+                _ => ()
+            }
+        });
+        println!("ranks recalculated ...");
+
+        let edges: Vec<(NodeId, NodeId, Weight)> =
+            users.into_iter()
+                .map(|(_name, ego_id)| {
+                    let result: Vec<(NodeId, NodeId, Weight)> =
+                        rank.get_ranks(ego_id, None)?
+                        .into_iter()
+                        .map(|(node_id, score)| (ego_id, node_id, score))
+                        .filter(|(ego_id, node_id, score)|
+                            // graph.node_id_to_name_unsafe(*node_id)
+                            node_ids.get(node_id)
+                                .map(|node| (node.starts_with("U") || node.starts_with("B")) &&
+                                    *score > 0.0 &&
+                                    ego_id != node_id)
+                                .unwrap_or(false) // todo: log
+                        ).collect();
+                    Ok::<Vec<(NodeId, NodeId, Weight)>, MeritRankError>(result)
+                })
+                .filter_map(|res| res.ok())
+                .flatten()
+                .collect::<Vec<(NodeId, NodeId, Weight)>>();
+
+        //let (_, edges) = my_graph.all(); // not optimal
         println!("mr_beacons_global: total {} edges.", edges.len());
         // Note:
         // Just eat errors in node_id_to_name_unsafe bellow.
