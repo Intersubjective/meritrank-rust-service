@@ -4,8 +4,9 @@ use std::env::var;
 use lazy_static::lazy_static;
 use std::string::ToString;
 use crate::error::GraphManipulationError;
-use crate::graph::{GraphSingleton, NodeId, GRAPH};
-use crate::lib_graph::{MeritRank, MeritRankError, MyGraph, Weight};
+use meritrank::NodeId;
+use crate::graph::{GraphSingleton, GRAPH};
+use meritrank::{MeritRank, MeritRankError, MyGraph, Weight};
 use nng::{Aio, AioResult, Context, Message, Protocol, Socket};
 
 use itertools::Itertools;
@@ -18,7 +19,7 @@ mod graph; // This module is for graph related operations
 // mod shared; // This module contains shared data structures
 
 mod error;
-mod lib_graph; // This module contains graph related operations and data structures
+//mod lib_graph; // This module contains graph related operations and data structures
 
 lazy_static! {
     static ref SERVICE_URL: String =
@@ -176,7 +177,7 @@ fn mr_scores_null(ego: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + 'sta
                         (
                             (
                                 ego,
-                                GraphSingleton::node_id_to_name(n).unwrap_or(n.to_string()) // thread safety?
+                                GraphSingleton::node_id_to_name(n).unwrap_or("n.to_string()".to_string()) // TODO [!] // thread safety?
                             ),
                             s,
                         )
@@ -300,7 +301,7 @@ impl GraphContext {
             .map(|(n, w)| {
                 (
                     ego,
-                    GraphSingleton::node_id_to_name(n).unwrap_or(n.to_string()), // thread safety?
+                    GraphSingleton::node_id_to_name(n).unwrap_or("n.to_string()".to_string()), // TODO [!] // thread safety?
                     w,
                 )
             })
@@ -332,22 +333,29 @@ impl GraphContext {
                     .edge_weight(subject_id.into(), object_id.into())
                     .unwrap_or(0.0);
 
-            contexted_graph
-                .upsert_edge_with_nodes(subject_id.into(), object_id.into(), amount)?;
+            // TODO [!]
+            //contexted_graph
+            //    .upsert_edge_with_nodes(subject_id.into(), object_id.into(), amount)?;
 
             let null_graph = graph.borrow_graph_mut();
-            match null_graph.get_edge_weight(subject_id.into(), object_id.into()) {
-                Ok(null_weight) =>
-                    *null_weight = *null_weight + amount - old_weight,
+            match null_graph.edge_weight(subject_id.into(), object_id.into()) {
+                Some(null_weight) =>
+                    // TODO [!]
+                    // *null_weight = *null_weight + amount - old_weight,
+                    (),
                 _ => {
-                    let _ =
-                        null_graph.upsert_edge(subject_id.into(), object_id.into(), amount)?;
+                    // let _ = null_graph.upsert_edge(subject_id.into(), object_id.into(), amount)?;
+                    // TODO [!]
+                    ()
                 }
             }
         } else {
+            // TODO [!]
+            /*
             graph
                 .borrow_graph_mut()
                 .upsert_edge(subject_id.into(), object_id.into(), amount)?;
+            */
         }
 
         Ok(v)
@@ -419,7 +427,7 @@ impl GraphContext {
 
                 // focus_id in graph
                 let focus_id: NodeId = graph.node_name_to_id_unsafe(focus)?;
-                println!("focus_id={}", focus_id);
+                println!("focus_id={:?}", focus_id);
 
                 let mut copy: MyGraph = MyGraph::new();
                 let source_graph: &MyGraph =
@@ -444,8 +452,9 @@ impl GraphContext {
                         }
                         // assert!( get_edge(a, b) != None);
 
-                        let _ = copy.upsert_edge_with_nodes(a_id, b_id, w_ab)?;
-                        println!("copy.add_edge_with_nodes(({a_id}, {b_id}, {w_ab});");
+                        // let _ = copy.upsert_edge_with_nodes(a_id, b_id, w_ab)?;
+                        // TODO [!]
+                        println!("copy.add_edge_with_nodes(({:?}, {:?}, {:?});", a_id, b_id, w_ab);
                     } else if b.starts_with("C") || b.starts_with("B") {
                         // ? # For connections user-> comment | beacon -> user,
                         // ? # convolve those into user->user
@@ -475,20 +484,23 @@ impl GraphContext {
                             let w_ac: f64 =
                                 w_ab * w_bc * (if w_ab < 0.0f64 && w_bc < 0.0f64 { -1.0f64 } else { 1.0f64 });
 
-                            let _ = copy.upsert_edge_with_nodes(a_id, c_id, w_ac)?;
-                            println!("copy.add_edge_with_nodes(({a_id}, {c_id}, {w_ac});");
+
+                            // TODO [!]
+                            // let _ = copy.upsert_edge_with_nodes(a_id, c_id, w_ac)?;
+                            println!("copy.add_edge_with_nodes(({:?}, {:?}, {:?});", a_id, c_id, w_ac);
                         }
                     }
                 }
 
                 // self.remove_outgoing_edges_upto_limit(G, ego, focus, limit or 3):
                 // neighbours = list(dest for src, dest in G.out_edges(focus))
-                let neighbours: Vec<(EdgeIndex, NodeIndex, NodeId)> = copy.outgoing(focus_id);
+                // TODO [!] (here:)
+                let neighbours: Vec<(EdgeIndex, NodeIndex, NodeId)> = Vec::new(); // copy.outgoing(focus_id);
                 println!("neighbours.size={}", neighbours.len());
 
                 // ego_id in graph
                 let ego_id: NodeId = graph.node_name_to_id_unsafe(ego)?;
-                println!("ego_id={}", ego_id);
+                println!("ego_id={:?}", ego_id);
 
                 let mut sorted: Vec<(Weight, (&EdgeIndex, &NodeIndex))> =
                     neighbours
@@ -509,10 +521,13 @@ impl GraphContext {
                 println!("limited.size={}", limited.len());
 
                 for (_edge_index, node_index) in limited {
+                    // TODO [!]
+                    /*
                     let node_id = copy.index2node(**node_index);
                     copy.remove_edge(ego_id, node_id);
                     println!("copy.remove_edge({ego_id}, {node_id})");
                     //G.remove_node(dest) // ???
+                    */
                 }
 
                 // add_path_to_graph(G, ego, focus)
@@ -555,7 +570,7 @@ impl GraphContext {
                             // get_transitive_edge_weight
                             let w_ac: f64 =
                                 w_ab * w_bc * (if w_ab < 0.0f64 && w_bc < 0.0f64 { -1.0f64 } else { 1.0f64 });
-                            println!("[0] copy.add_edge({a}, {c}, {w_ac}) (try)");
+                            println!("[0] copy.add_edge({:?}, {:?}, {w_ac}) (try)", a, c);
                             copy.upsert_edge(a, c, w_ac)?;
                             Ok(())
                         } else if a_name.starts_with("U") {
@@ -566,7 +581,7 @@ impl GraphContext {
                                                 a_name, b_name
                                         )
                                     ))?;
-                            println!("[1] copy.add_edge({a}, {b}, {weight}) (try)");
+                            println!("[1] copy.add_edge({:?}, {:?}, {weight}) (try)", a, b);
                             copy.upsert_edge(a, b, weight)?;
                             Ok(())
                         } else {
@@ -590,7 +605,7 @@ impl GraphContext {
                                             a_name, b_name
                                     )
                                 ))?;
-                        println!("[2] copy.add_edge({a}, {b}, {weight}) (try)");
+                        println!("[2] copy.add_edge({:?}, {:?}, {weight}) (try)", a, b);
                         copy.upsert_edge(a, b, weight)?;
                         Ok(())
                     } else if v3.len() == 1 {
@@ -599,12 +614,12 @@ impl GraphContext {
                         Ok(())
                     } else if v3.is_empty() {
                         // No path found, so add just the focus node to show at least something
-                        let node = lib_graph::node::Node::new(focus_id);
+                        let node = meritrank::node::Node::new(focus_id);
                         copy.add_node(node);
-                        println!("copy.add_node({focus_id}) (by node)");
+                        println!("copy.add_node({:?}) (by node)", focus_id);
                         Ok(())
                     } else {
-                        Err(GraphManipulationError::DataExtractionFailure(
+                        Err(crate::graph::GraphManipulationError::DataExtractionFailure(
                             "Should never be here (v3)".to_string()
                         ))
                     }

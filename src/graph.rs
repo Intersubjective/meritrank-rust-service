@@ -12,8 +12,8 @@ use crate::error::GraphManipulationError::UnknownContextFailure;
 // use crate::logger::Logger;
 
 // Current crate (`crate::`) imports
-pub use crate::lib_graph::NodeId;
-use crate::lib_graph::{MeritRank, MyGraph};
+pub use meritrank::NodeId;
+use meritrank::{MeritRank, MyGraph};
 
 // Singleton instance
 lazy_static! {
@@ -144,7 +144,7 @@ impl GraphSingleton {
         if let Some(&node_id) = self.node_names.get(node_name) {
             node_id
         } else {
-            let new_node_id = self.graph.node_count() + 1;
+            let new_node_id = 1234;//self.graph.node_count() + 1; // TODO [!]
             let node_id = NodeId::UInt(new_node_id);
             self.node_names.insert(node_name.to_string(), node_id);
             self.graph.add_node(node_id.into());
@@ -194,7 +194,7 @@ impl GraphSingleton {
             }
         }
         Err(GraphManipulationError::NodeNotFound(format!(
-            "Node not found: {}",
+            "Node not found: {:?}",
             node_id
         )))
     }
@@ -213,7 +213,7 @@ impl GraphSingleton {
     pub fn clear_graph() -> Result<(), GraphManipulationError> {
         match GRAPH.lock() {
             Ok(mut graph) => {
-                graph.graph.clear();
+                //graph.graph.clear(); // TODO [!]
                 graph.graphs.clear();
                 graph.node_names.clear();
                 Ok(())
