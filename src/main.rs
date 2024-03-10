@@ -4,7 +4,7 @@ use std::env::var;
 use lazy_static::lazy_static;
 use std::string::ToString;
 use crate::error::GraphManipulationError;
-use meritrank::NodeId;
+use meritrank::{Node, NodeId};
 use crate::graph::{GraphSingleton, GRAPH};
 use meritrank::{MeritRank, MeritRankError, MyGraph, Weight};
 use nng::{Aio, AioResult, Context, Message, Protocol, Socket};
@@ -49,6 +49,34 @@ lazy_static! {
         rmp_serde::to_vec(&EMPTY_ROWS_VEC).unwrap()
     };
 }
+
+/*
+trait MyMyGraph {
+    fn shortest_path(&self, start: NodeId, goal: NodeId) -> Option<Vec<NodeId>>;
+}
+
+impl MyMyGraph for MyGraph {
+    fn shortest_path(&self, start: NodeId, goal: NodeId) -> Option<Vec<NodeId>> {
+        let start_index = self.get_node_index(start)?;
+        let goal_index = self.get_node_index(goal)?;
+        let (_, v) =
+            petgraph::algo::astar(
+                &self.graph,
+                start_index,
+                |finish| finish == goal_index,
+                |e| *e.weight(),
+                |_| 0.0f64
+            )?;
+        let result: Vec<NodeId> =
+            v
+                .iter()
+                .map(|&idx| self.index2node(idx))
+                .collect();
+
+        Some(result)
+    }
+}
+*/
 
 // const PARALLEL: usize = 128;
 fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
@@ -162,6 +190,16 @@ fn mr_node_score_null(ego: &str, target: &str) -> Result<Vec<u8>, Box<dyn std::e
     Ok(v)
 }
 
+fn node_id2string(node_id: &NodeId) -> String {
+    // check if NodeId is not None and not default (== 0)
+    // !self.is_none() && *self != NodeId::default()
+    match node_id {
+        NodeId::None => "false".to_string(),
+        NodeId::Int(id) => id.to_string(),
+        NodeId::UInt(id) => id.to_string(),
+    }
+}
+
 fn mr_scores_null(ego: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
     let result: Vec<_> =
         GraphSingleton::contexts()?
@@ -177,7 +215,7 @@ fn mr_scores_null(ego: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + 'sta
                         (
                             (
                                 ego,
-                                GraphSingleton::node_id_to_name(n).unwrap_or("n.to_string()".to_string()) // TODO [!] // thread safety?
+                                GraphSingleton::node_id_to_name(n).unwrap_or(node_id2string(&n))
                             ),
                             s,
                         )
@@ -301,7 +339,7 @@ impl GraphContext {
             .map(|(n, w)| {
                 (
                     ego,
-                    GraphSingleton::node_id_to_name(n).unwrap_or("n.to_string()".to_string()), // TODO [!] // thread safety?
+                    GraphSingleton::node_id_to_name(n).unwrap_or(node_id2string(&n)),
                     w,
                 )
             })
@@ -333,29 +371,22 @@ impl GraphContext {
                     .edge_weight(subject_id.into(), object_id.into())
                     .unwrap_or(0.0);
 
-            // TODO [!]
-            //contexted_graph
-            //    .upsert_edge_with_nodes(subject_id.into(), object_id.into(), amount)?;
+            contexted_graph
+                .upsert_edge_with_nodes(subject_id.into(), object_id.into(), amount)?;
 
             let null_graph = graph.borrow_graph_mut();
             match null_graph.edge_weight(subject_id.into(), object_id.into()) {
                 Some(null_weight) =>
-                    // TODO [!]
-                    // *null_weight = *null_weight + amount - old_weight,
-                    (),
+                    //*null_weight = *null_weight + amount - old_weight; // todo: check
+                    null_graph.upsert_edge(subject_id.into(), object_id.into(), null_weight + amount - old_weight)?,
                 _ => {
-                    // let _ = null_graph.upsert_edge(subject_id.into(), object_id.into(), amount)?;
-                    // TODO [!]
-                    ()
+                    let _ = null_graph.upsert_edge(subject_id.into(), object_id.into(), amount)?;
                 }
             }
         } else {
-            // TODO [!]
-            /*
             graph
                 .borrow_graph_mut()
                 .upsert_edge(subject_id.into(), object_id.into(), amount)?;
-            */
         }
 
         Ok(v)
@@ -452,8 +483,7 @@ impl GraphContext {
                         }
                         // assert!( get_edge(a, b) != None);
 
-                        // let _ = copy.upsert_edge_with_nodes(a_id, b_id, w_ab)?;
-                        // TODO [!]
+                        let _ = copy.upsert_edge_with_nodes(a_id, b_id, w_ab)?;
                         println!("copy.add_edge_with_nodes(({:?}, {:?}, {:?});", a_id, b_id, w_ab);
                     } else if b.starts_with("C") || b.starts_with("B") {
                         // ? # For connections user-> comment | beacon -> user,
@@ -484,9 +514,7 @@ impl GraphContext {
                             let w_ac: f64 =
                                 w_ab * w_bc * (if w_ab < 0.0f64 && w_bc < 0.0f64 { -1.0f64 } else { 1.0f64 });
 
-
-                            // TODO [!]
-                            // let _ = copy.upsert_edge_with_nodes(a_id, c_id, w_ac)?;
+                            let _ = copy.upsert_edge_with_nodes(a_id, c_id, w_ac)?;
                             println!("copy.add_edge_with_nodes(({:?}, {:?}, {:?});", a_id, c_id, w_ac);
                         }
                     }
@@ -494,8 +522,8 @@ impl GraphContext {
 
                 // self.remove_outgoing_edges_upto_limit(G, ego, focus, limit or 3):
                 // neighbours = list(dest for src, dest in G.out_edges(focus))
-                // TODO [!] (here:)
-                let neighbours: Vec<(EdgeIndex, NodeIndex, NodeId)> = Vec::new(); // copy.outgoing(focus_id);
+
+                let neighbours: Vec<(EdgeIndex, NodeIndex, NodeId)> = copy.outgoing(focus_id);
                 println!("neighbours.size={}", neighbours.len());
 
                 // ego_id in graph
@@ -521,13 +549,10 @@ impl GraphContext {
                 println!("limited.size={}", limited.len());
 
                 for (_edge_index, node_index) in limited {
-                    // TODO [!]
-                    /*
                     let node_id = copy.index2node(**node_index);
                     copy.remove_edge(ego_id, node_id);
-                    println!("copy.remove_edge({ego_id}, {node_id})");
+                    println!("copy.remove_edge({:?}, {:?})", ego_id, node_id);
                     //G.remove_node(dest) // ???
-                    */
                 }
 
                 // add_path_to_graph(G, ego, focus)
@@ -535,7 +560,7 @@ impl GraphContext {
                     copy
                         .shortest_path(ego_id, focus_id)
                         .unwrap_or(Vec::new());
-                println!("path(from={ego_id}, to={focus_id})={:?}", path);
+                println!("path(from={:?}, to={:?})={:?}", ego_id, focus_id, path);
                 // add_path_to_graph(G, ego, focus)
                 // Note: no loops or "self edges" are expected in the path
                 let ok: Result<(), GraphManipulationError> = {
@@ -652,7 +677,7 @@ impl GraphContext {
                         .map(|node_id| {
                             let test1 = graph.node_id_to_name_unsafe(*node_id);
                             let test2 = rank.get_node_score(ego_id, *node_id);
-                            println!("\tnode_id={node_id}, test1={:?}, test2={:?}", test1, test2);
+                            println!("\tnode_id={:?}, test1={:?}, test2={:?}", node_id, test1, test2);
                             let name = graph.node_id_to_name_unsafe(*node_id)?;
 
                             if !rank.get_personal_hits().contains_key(&ego_id) {
@@ -723,8 +748,8 @@ impl GraphContext {
                 .iter()
                 .map(|(_edge_index, from, to)|
                     (
-                        graph.node_id_to_name_unsafe(*from).unwrap_or(from.to_string()),
-                        graph.node_id_to_name_unsafe(*to).unwrap_or(to.to_string())
+                        graph.node_id_to_name_unsafe(*from).unwrap_or(node_id2string(from)),
+                        graph.node_id_to_name_unsafe(*to).unwrap_or(node_id2string(to))
                     )
                 )
                 .collect();
@@ -735,7 +760,7 @@ impl GraphContext {
 
     fn mr_beacons_global(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
         let mut rank = self.get_rank()?;
-        let mut graph = GRAPH.lock()?;
+        let graph = GRAPH.lock()?;
         let node_names: HashMap<String, NodeId> =
             graph.borrow_node_names().clone();
         let node_ids: HashMap<NodeId, String> =

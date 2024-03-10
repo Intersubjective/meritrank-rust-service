@@ -144,7 +144,7 @@ impl GraphSingleton {
         if let Some(&node_id) = self.node_names.get(node_name) {
             node_id
         } else {
-            let new_node_id = 1234;//self.graph.node_count() + 1; // TODO [!]
+            let new_node_id = self.graph.node_count() + 1;
             let node_id = NodeId::UInt(new_node_id);
             self.node_names.insert(node_name.to_string(), node_id);
             self.graph.add_node(node_id.into());
@@ -213,7 +213,7 @@ impl GraphSingleton {
     pub fn clear_graph() -> Result<(), GraphManipulationError> {
         match GRAPH.lock() {
             Ok(mut graph) => {
-                //graph.graph.clear(); // TODO [!]
+                graph.graph.clear();
                 graph.graphs.clear();
                 graph.node_names.clear();
                 Ok(())
