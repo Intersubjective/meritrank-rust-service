@@ -12,8 +12,8 @@ use crate::error::GraphManipulationError::UnknownContextFailure;
 // use crate::logger::Logger;
 
 // Current crate (`crate::`) imports
-pub use crate::lib_graph::NodeId;
-use crate::lib_graph::{MeritRank, MyGraph};
+pub use meritrank::NodeId;
+use meritrank::{MeritRank, MyGraph};
 
 // Singleton instance
 lazy_static! {
@@ -194,7 +194,7 @@ impl GraphSingleton {
             }
         }
         Err(GraphManipulationError::NodeNotFound(format!(
-            "Node not found: {}",
+            "Node not found: {:?}",
             node_id
         )))
     }

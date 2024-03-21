@@ -1,4 +1,4 @@
-use crate::lib_graph::MeritRankError;
+use meritrank::MeritRankError;
 
 #[allow(dead_code)]
 // Define a new error type for better error handling
