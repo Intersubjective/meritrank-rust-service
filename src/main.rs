@@ -3,9 +3,9 @@ use std::time::Duration;
 use std::env::var;
 use lazy_static::lazy_static;
 use std::string::ToString;
-use crate::error::GraphManipulationError;
+use mrgraph::error::GraphManipulationError;
 use meritrank::{Node, NodeId};
-use crate::graph::{GraphSingleton, GRAPH};
+use mrgraph::mrgraph::{GraphSingleton, GRAPH};
 use meritrank::{MeritRank, MeritRankError, MyGraph, Weight};
 use nng::{Aio, AioResult, Context, Message, Protocol, Socket};
 
@@ -14,11 +14,11 @@ use std::collections::HashMap;
 use std::sync::MutexGuard;
 use petgraph::graph::{EdgeIndex, NodeIndex};
 
-mod graph; // This module is for graph related operations
+//mod graph; // This module is for graph related operations
 // #[cfg(feature = "shared")]
 // mod shared; // This module contains shared data structures
 
-mod error;
+//mod error;
 //mod lib_graph; // This module contains graph related operations and data structures
 
 lazy_static! {
@@ -644,7 +644,7 @@ impl GraphContext {
                         println!("copy.add_node({:?}) (by node)", focus_id);
                         Ok(())
                     } else {
-                        Err(crate::graph::GraphManipulationError::DataExtractionFailure(
+                        Err(mrgraph::error::GraphManipulationError::DataExtractionFailure(
                             "Should never be here (v3)".to_string()
                         ))
                     }
