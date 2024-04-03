@@ -1,27 +1,19 @@
 use std::thread;
 use std::time::Duration;
 use std::env::var;
-use lazy_static::lazy_static;
 use std::string::ToString;
-use mrgraph::error::GraphManipulationError;
-use meritrank::{Node, NodeId};
-use mrgraph::mrgraph::{GraphSingleton, GRAPH};
-use meritrank::{MeritRank, MeritRankError, MyGraph, Weight};
-use nng::{Aio, AioResult, Context, Message, Protocol, Socket};
-
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::sync::MutexGuard;
 use petgraph::graph::{EdgeIndex, NodeIndex};
+use nng::{Aio, AioResult, Context, Message, Protocol, Socket};
+use mrgraph::error::GraphManipulationError;
+use mrgraph::mrgraph::{GraphSingleton, GRAPH};
+use mrgraph::mrgraph::NodeId;
+use meritrank::{MeritRank, MyGraph, MeritRankError, Weight};
 
-//mod graph; // This module is for graph related operations
-// #[cfg(feature = "shared")]
-// mod shared; // This module contains shared data structures
 
-//mod error;
-//mod lib_graph; // This module contains graph related operations and data structures
-
-lazy_static! {
+lazy_static::lazy_static! {
     static ref SERVICE_URL: String =
         var("RUST_SERVICE_URL")
             .unwrap_or("tcp://127.0.0.1:10234".to_string());
@@ -41,7 +33,8 @@ lazy_static! {
     static ref WEIGHT_MIN_LEVEL: Weight =
         var("WEIGHT_MIN_LEVEL")
             .ok()
-            .and_then(|s| s.parse::<Weight>().ok())
+            .and_then(|s| s.parse::<Weight>().ok()) // the trait `FromStr` is not implemented for `Weight`
+            //.and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(0.1); // was: 1.0
 
     static ref EMPTY_RESULT: Vec<u8> = {
@@ -49,34 +42,6 @@ lazy_static! {
         rmp_serde::to_vec(&EMPTY_ROWS_VEC).unwrap()
     };
 }
-
-/*
-trait MyMyGraph {
-    fn shortest_path(&self, start: NodeId, goal: NodeId) -> Option<Vec<NodeId>>;
-}
-
-impl MyMyGraph for MyGraph {
-    fn shortest_path(&self, start: NodeId, goal: NodeId) -> Option<Vec<NodeId>> {
-        let start_index = self.get_node_index(start)?;
-        let goal_index = self.get_node_index(goal)?;
-        let (_, v) =
-            petgraph::algo::astar(
-                &self.graph,
-                start_index,
-                |finish| finish == goal_index,
-                |e| *e.weight(),
-                |_| 0.0f64
-            )?;
-        let result: Vec<NodeId> =
-            v
-                .iter()
-                .map(|&idx| self.index2node(idx))
-                .collect();
-
-        Some(result)
-    }
-}
-*/
 
 // const PARALLEL: usize = 128;
 fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
@@ -268,7 +233,15 @@ impl GraphContext {
         } else if let Ok(((("src", "=", ego), ("dest", "=", target)), ())) = rmp_serde::from_slice(slice) {
             self.mr_node_score(ego, target)
         } else if let Ok(((("src", "=", ego), ), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego)
+            self.mr_scores(ego, "", f64::MIN, true, None)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, score_gt, false, None)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, score_gte, true, None)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, score_gt, false, limit)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, score_gte, true, limit)
         } else if let Ok((((subject, object, amount), ), ())) = rmp_serde::from_slice(slice) {
             self.mr_edge(subject, object, amount)
         } else if let Ok(((("src", "delete", ego), ("dest", "delete", target)), ())) = rmp_serde::from_slice(slice) {
@@ -302,16 +275,7 @@ impl GraphContext {
         }
     }
 
-    /*
-    fn borrow_graph<'a>(&'a self, mut graph: MutexGuard<GraphSingleton>) -> &MyGraph {
-        match &self.context {
-            None => graph.borrow_graph(),
-            Some(ctx) => graph.borrow_graph1(ctx)
-        }
-    }
-    */
-
-    fn get_node_id(&self, mut graph: &mut MutexGuard<GraphSingleton>, name: &str) -> NodeId {
+    fn get_node_id(&self, graph: &mut MutexGuard<GraphSingleton>, name: &str) -> NodeId {
         match &self.context {
             None => graph.get_node_id(name),
             Some(ctx) => graph.get_node_id1(ctx.as_str(), name)
@@ -329,11 +293,13 @@ impl GraphContext {
         Ok(v)
     }
 
-    fn mr_scores(&self, ego: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
+    fn mr_scores(&self, ego: &str, target_like: &str, score_gt: f64, score_gte: bool, limit: Option<u32>) ->
+        Result<Vec<u8>, Box<dyn std::error::Error + 'static>>
+    {
         let mut rank = self.get_rank()?;
         let node_id: NodeId = GraphSingleton::node_name_to_id(ego)?; // thread safety?
         let _ = rank.calculate(node_id, *NUM_WALK)?;
-        let result: Vec<(&str, String, Weight)> = rank
+        let result = rank
             .get_ranks(node_id, None)?
             .into_iter()
             .map(|(n, w)| {
@@ -343,8 +309,16 @@ impl GraphContext {
                     w,
                 )
             })
-            .collect();
-        let v: Vec<u8> = rmp_serde::to_vec(&result)?;
+            .filter(|(_, target, _)| target.starts_with(target_like))
+            .filter(|(_, _, score)| score_gt > *score || (score_gte && score_gt == *score));
+
+        let limited: Vec<(&str, String, Weight)> =
+            match limit {
+                Some(limit) => result.take(limit.try_into().unwrap()).collect(),
+                None => result.collect(),
+            };
+
+        let v: Vec<u8> = rmp_serde::to_vec(&limited)?;
         Ok(v)
     }
 
@@ -451,7 +425,7 @@ impl GraphContext {
         // let rank: MeritRank = self.get_rank()?;
         // rank.calculate need mutable rank
         match GRAPH.lock() {
-            Ok(mut graph) => {
+            Ok(graph) => {
                 let mut rank: MeritRank = self.get_rank()?;
                 // MeritRank::new(graph.borrow_graph().clone())?;
                 // ? should we change weight/scores in GRAPH ?
@@ -639,6 +613,7 @@ impl GraphContext {
                         Ok(())
                     } else if v3.is_empty() {
                         // No path found, so add just the focus node to show at least something
+                        //let node = mrgraph::meritrank::node::Node::new(focus_id);
                         let node = meritrank::node::Node::new(focus_id);
                         copy.add_node(node);
                         println!("copy.add_node({:?}) (by node)", focus_id);
