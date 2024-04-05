@@ -293,7 +293,7 @@ impl GraphContext {
         Ok(v)
     }
 
-    fn mr_scores(&self, ego: &str, target_like: &str, score_gt: f64, score_gte: bool, limit: Option<u32>) ->
+    fn mr_scores(&self, ego: &str, target_like: &str, score_gt: f64, score_gte: bool, limit: Option<i32>) ->
         Result<Vec<u8>, Box<dyn std::error::Error + 'static>>
     {
         let mut rank = self.get_rank()?;
