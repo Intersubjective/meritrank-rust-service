@@ -146,8 +146,14 @@ fn mr_node_score_null(ego: &str, target: &str) -> Result<Vec<u8>, Box<dyn std::e
                 let mut rank = GraphSingleton::get_rank1(&context).ok()?;
                 let ego_id: NodeId = GraphSingleton::node_name_to_id(ego).ok()?; // thread safety?
                 let target_id: NodeId = GraphSingleton::node_name_to_id(target).ok()?; // thread safety?
-                let _ = rank.calculate(ego_id, *NUM_WALK).ok()?;
-                rank.get_node_score(ego_id, target_id).ok()
+
+                match rank.get_node_score(ego_id, target_id) {
+                    Err(MeritRankError::NodeDoesNotCalculated) => {
+                        let _ = rank.calculate(ego_id, *NUM_WALK).ok()?;
+                        rank.get_node_score(ego_id, target_id).ok()
+                    },
+                    other => other.ok()
+                }
             }) // just skip errors in contexts
             .sum();
     let result: Vec<(&str, &str, f64)> = [(ego, target, w)].to_vec();
@@ -167,25 +173,37 @@ fn node_id2string(node_id: &NodeId) -> String {
 
 fn mr_scores_null(ego: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
     let result: Vec<_> =
-        GraphSingleton::contexts()?
+        GraphSingleton::contexts()? // .push(null)
             .iter()
             .filter_map(|context| {
                 let mut rank = GraphSingleton::get_rank1(&context).ok()?;
-                let node_id: NodeId = GraphSingleton::node_name_to_id(ego).ok()?; // thread safety?
+                let ego_id: NodeId = GraphSingleton::node_name_to_id(ego).ok()?; // thread safety?
+
+                /*
                 let _ = rank.calculate(node_id, *NUM_WALK).ok()?;
-                let rows: Vec<_> = rank
-                    .get_ranks(node_id, None).ok()?
-                    .into_iter()
-                    .map(|(n, s)| {
-                        (
+                let rank_result0 = rank.get_ranks(node_id, None).ok()?;
+                */
+                let rank_result = match rank.get_ranks(ego_id, None) {
+                    Err(MeritRankError::NodeDoesNotCalculated) => {
+                        let _ = rank.calculate(ego_id, *NUM_WALK).ok()?;
+                        rank.get_ranks(ego_id, None).ok()
+                    },
+                    other => other.ok()
+                };
+                let rows: Vec<_> =
+                    rank_result?
+                        .into_iter()
+                        .map(|(n, s)| {
                             (
-                                ego,
-                                GraphSingleton::node_id_to_name(n).unwrap_or(node_id2string(&n))
-                            ),
-                            s,
-                        )
-                    })
-                    .collect();
+                                (
+                                    ego,
+                                    GraphSingleton::node_id_to_name(n)
+                                        .unwrap_or(node_id2string(&n))
+                                ),
+                                s,
+                            )
+                        })
+                        .collect();
                 Some(rows)
             })
             .flatten()
