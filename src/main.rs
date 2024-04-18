@@ -251,15 +251,23 @@ impl GraphContext {
         } else if let Ok(((("src", "=", ego), ("dest", "=", target)), ())) = rmp_serde::from_slice(slice) {
             self.mr_node_score(ego, target)
         } else if let Ok(((("src", "=", ego), ), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, "", f64::MIN, true, None)
-        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt)), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, target_like, score_gt, false, None)
-        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte)), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, target_like, score_gte, true, None)
-        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, target_like, score_gt, false, limit)
-        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, target_like, score_gte, true, limit)
+            self.mr_scores(ego, "", f64::MIN, true, f64::MAX, true, None)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt), ("score", "<", score_lt)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, score_gt, false, score_lt, false, None)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte), ("score", "<", score_lt)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, score_gte, true, score_lt, false, None)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt), ("score", "<=", score_lt)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, score_gt, false, score_lt, true, None)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte), ("score", "<=", score_lt)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, score_gte, true, score_lt, true, None)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt), ("score", "<", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, score_gt, false, score_lt, false, limit)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte), ("score", "<", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, score_gte, true, score_lt, false, limit)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt), ("score", "<=", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, score_gt, false, score_lt, true, limit)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte), ("score", "<=", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, score_gte, true, score_lt, true, limit)
         } else if let Ok((((subject, object, amount), ), ())) = rmp_serde::from_slice(slice) {
             self.mr_edge(subject, object, amount)
         } else if let Ok(((("src", "delete", ego), ("dest", "delete", target)), ())) = rmp_serde::from_slice(slice) {
@@ -311,7 +319,10 @@ impl GraphContext {
         Ok(v)
     }
 
-    fn mr_scores(&self, ego: &str, target_like: &str, score_gt: f64, score_gte: bool, limit: Option<i32>) ->
+    fn mr_scores(&self, ego: &str, target_like: &str,
+                 score_gt: f64, score_gte: bool,
+                 score_lt: f64, score_lte: bool,
+                 limit: Option<i32>) ->
         Result<Vec<u8>, Box<dyn std::error::Error + 'static>>
     {
         let mut rank = self.get_rank()?;
@@ -328,7 +339,8 @@ impl GraphContext {
                 )
             })
             .filter(|(_, target, _)| target.starts_with(target_like))
-            .filter(|(_, _, score)| score_gt > *score || (score_gte && score_gt == *score));
+            .filter(|(_, _, score)| score_gt < *score || (score_gte && score_gt == *score))
+            .filter(|(_, _, score)| *score > score_lt || (score_lte && score_lt == *score));
 
         let limited: Vec<(&str, String, Weight)> =
             match limit {
