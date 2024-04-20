@@ -153,7 +153,10 @@ fn mr_node_score_null(ego: &str, target: &str) -> Result<Vec<u8>, Box<dyn std::e
                 let mut rank = GraphSingleton::get_rank1(&context).ok()?;
                 let ego_id: NodeId = GraphSingleton::node_name_to_id(ego).ok()?; // thread safety?
                 let target_id: NodeId = GraphSingleton::node_name_to_id(target).ok()?; // thread safety?
-
+                /*
+                let _ = rank.calculate(ego_id, *NUM_WALK).ok()?;
+                rank.get_node_score(ego_id, target_id).ok()
+                */
                 match rank.get_node_score(ego_id, target_id) {
                     Err(MeritRankError::NodeDoesNotCalculated) => {
                         let _ = rank.calculate(ego_id, *NUM_WALK).ok()?;
@@ -329,8 +332,8 @@ impl GraphContext {
     }
 
     fn mr_scores(&self, ego: &str, target_like: &str,
-                 score_gt: f64, score_gte: bool,
                  score_lt: f64, score_lte: bool,
+                 score_gt: f64, score_gte: bool,
                  limit: Option<i32>) ->
         Result<Vec<u8>, Box<dyn std::error::Error + 'static>>
     {
