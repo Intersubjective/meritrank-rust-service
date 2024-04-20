@@ -43,6 +43,8 @@ lazy_static::lazy_static! {
     };
 }
 
+const VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
+
 // const PARALLEL: usize = 128;
 fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     match var("RUST_SERVICE_PARALLEL") {
@@ -57,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
 }
 
 fn main_sync() -> Result<(), Box<dyn std::error::Error + 'static>> {
-    println!("Starting server at {}", *SERVICE_URL);
+    println!("Starting server {} at {}", VERSION.unwrap_or("unknown"), *SERVICE_URL);
     println!("NUM_WALK={}, GRAVITY_NUM_WALK={}", *NUM_WALK, *GRAVITY_NUM_WALK);
 
     let s = Socket::new(Protocol::Rep0)?;
@@ -72,7 +74,7 @@ fn main_sync() -> Result<(), Box<dyn std::error::Error + 'static>> {
 }
 
 fn main_async(parallel: usize) -> Result<(), Box<dyn std::error::Error + 'static>> {
-    println!("Starting server at {}. PARALLEL={parallel}", *SERVICE_URL);
+    println!("Starting server {} at {}. PARALLEL={parallel}", VERSION.unwrap_or("unknown"), *SERVICE_URL);
     println!("NUM_WALK={}, GRAVITY_NUM_WALK={}", *NUM_WALK, *GRAVITY_NUM_WALK);
 
     let s = Socket::new(Protocol::Rep0)?;
@@ -136,6 +138,11 @@ fn process(req: Message) -> Vec<u8> {
             let s: String = e.to_string();
             rmp_serde::to_vec(&s).unwrap()
         })
+}
+
+fn mr_service() -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
+    let s: String = VERSION.unwrap_or("unknown").to_string();
+    Ok(rmp_serde::to_vec(&s)?)
 }
 
 fn mr_node_score_null(ego: &str, target: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
@@ -242,7 +249,9 @@ impl GraphContext {
     }
 
     pub fn process(&self, slice: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        if let Ok(((("src", "=", ego), ("dest", "=", target)), (), "null")) = rmp_serde::from_slice(slice) {
+        if let Ok("ver") = rmp_serde::from_slice(slice) {
+            mr_service()
+        } else if let Ok(((("src", "=", ego), ("dest", "=", target)), (), "null")) = rmp_serde::from_slice(slice) {
             mr_node_score_null(ego, target)
         } else if let Ok(((("src", "=", ego), ), (), "null")) = rmp_serde::from_slice(slice) {
             mr_scores_null(ego)
@@ -340,7 +349,7 @@ impl GraphContext {
             })
             .filter(|(_, target, _)| target.starts_with(target_like))
             .filter(|(_, _, score)| score_gt < *score || (score_gte && score_gt == *score))
-            .filter(|(_, _, score)| *score > score_lt || (score_lte && score_lt == *score));
+            .filter(|(_, _, score)| *score < score_lt || (score_lte && score_lt == *score));
 
         let limited: Vec<(&str, String, Weight)> =
             match limit {
