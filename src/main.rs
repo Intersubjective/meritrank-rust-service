@@ -263,23 +263,23 @@ impl GraphContext {
         } else if let Ok(((("src", "=", ego), ("dest", "=", target)), ())) = rmp_serde::from_slice(slice) {
             self.mr_node_score(ego, target)
         } else if let Ok(((("src", "=", ego), ), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, "", f64::MIN, true, f64::MAX, true, None)
+            self.mr_scores(ego, "", false, f64::MIN, true, f64::MAX, true, None)
         } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt), ("score", "<", score_lt)), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, target_like, score_gt, false, score_lt, false, None)
+            self.mr_scores(ego, target_like, false, score_gt, false, score_lt, false, None)
         } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte), ("score", "<", score_lt)), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, target_like, score_gte, true, score_lt, false, None)
+            self.mr_scores(ego, target_like, false, score_gte, true, score_lt, false, None)
         } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt), ("score", "<=", score_lt)), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, target_like, score_gt, false, score_lt, true, None)
+            self.mr_scores(ego, target_like, false, score_gt, false, score_lt, true, None)
         } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte), ("score", "<=", score_lt)), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, target_like, score_gte, true, score_lt, true, None)
-        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt), ("score", "<", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, target_like, score_gt, false, score_lt, false, limit)
-        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte), ("score", "<", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, target_like, score_gte, true, score_lt, false, limit)
-        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt), ("score", "<=", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, target_like, score_gt, false, score_lt, true, limit)
-        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte), ("score", "<=", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, target_like, score_gte, true, score_lt, true, limit)
+            self.mr_scores(ego, target_like, false, score_gte, true, score_lt, true, None)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("hide_personal", hide_personal), ("score", ">", score_gt), ("score", "<", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, hide_personal, score_gt, false, score_lt, false, limit)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("hide_personal", hide_personal), ("score", ">=", score_gte), ("score", "<", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, hide_personal, score_gte, true, score_lt, false, limit)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("hide_personal", hide_personal), ("score", ">", score_gt), ("score", "<=", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, hide_personal, score_gt, false, score_lt, true, limit)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("hide_personal", hide_personal), ("score", ">=", score_gte), ("score", "<=", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, hide_personal, score_gte, true, score_lt, true, limit)
         } else if let Ok((((subject, object, amount), ), ())) = rmp_serde::from_slice(slice) {
             self.mr_edge(subject, object, amount)
         } else if let Ok(((("src", "delete", ego), ("dest", "delete", target)), ())) = rmp_serde::from_slice(slice) {
@@ -331,7 +331,9 @@ impl GraphContext {
         Ok(v)
     }
 
-    fn mr_scores(&self, ego: &str, target_like: &str,
+    fn mr_scores(&self, ego: &str,
+                 target_like: &str,
+                 hide_personal: bool,
                  score_lt: f64, score_lte: bool,
                  score_gt: f64, score_gte: bool,
                  limit: Option<i32>) ->
@@ -340,6 +342,7 @@ impl GraphContext {
         let mut rank = self.get_rank()?;
         let node_id: NodeId = GraphSingleton::node_name_to_id(ego)?; // thread safety?
         let _ = rank.calculate(node_id, *NUM_WALK)?;
+
         let result = rank
             .get_ranks(node_id, None)?
             .into_iter()
@@ -352,7 +355,17 @@ impl GraphContext {
             })
             .filter(|(_, target, _)| target.starts_with(target_like))
             .filter(|(_, _, score)| score_gt < *score || (score_gte && score_gt == *score))
-            .filter(|(_, _, score)| *score < score_lt || (score_lte && score_lt == *score));
+            .filter(|(_, _, score)| *score < score_lt || (score_lte && score_lt == *score))
+            .filter(|(ego, target, _)|
+                if hide_personal {
+                    match GraphSingleton::node_name_to_id(target) { // thread safety?
+                        Ok(target_id) =>
+                            !((target.starts_with("C") || target.starts_with("B")) &&
+                                rank.get_edge(target_id, node_id).is_some()),
+                        _ => true
+                    }
+                } else { true }
+            );
 
         let limited: Vec<(&str, String, Weight)> =
             match limit {
