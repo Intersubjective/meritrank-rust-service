@@ -241,8 +241,14 @@ impl GraphContext {
         }
     }
     pub fn new(context_init: &str) -> GraphContext {
-        GraphContext {
-            context: Some(context_init.to_string())
+        if context_init.is_empty() {
+            GraphContext {
+                context: None
+            }
+        } else {
+            GraphContext {
+                context: Some(context_init.to_string())
+            }
         }
     }
 
