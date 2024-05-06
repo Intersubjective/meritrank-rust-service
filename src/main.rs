@@ -43,6 +43,8 @@ lazy_static::lazy_static! {
     };
 }
 
+const VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
+
 // const PARALLEL: usize = 128;
 fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     match var("RUST_SERVICE_PARALLEL") {
@@ -57,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
 }
 
 fn main_sync() -> Result<(), Box<dyn std::error::Error + 'static>> {
-    println!("Starting server at {}", *SERVICE_URL);
+    println!("Starting server {} at {}", VERSION.unwrap_or("unknown"), *SERVICE_URL);
     println!("NUM_WALK={}, GRAVITY_NUM_WALK={}", *NUM_WALK, *GRAVITY_NUM_WALK);
 
     let s = Socket::new(Protocol::Rep0)?;
@@ -72,7 +74,7 @@ fn main_sync() -> Result<(), Box<dyn std::error::Error + 'static>> {
 }
 
 fn main_async(parallel: usize) -> Result<(), Box<dyn std::error::Error + 'static>> {
-    println!("Starting server at {}. PARALLEL={parallel}", *SERVICE_URL);
+    println!("Starting server {} at {}. PARALLEL={parallel}", VERSION.unwrap_or("unknown"), *SERVICE_URL);
     println!("NUM_WALK={}, GRAVITY_NUM_WALK={}", *NUM_WALK, *GRAVITY_NUM_WALK);
 
     let s = Socket::new(Protocol::Rep0)?;
@@ -138,6 +140,11 @@ fn process(req: Message) -> Vec<u8> {
         })
 }
 
+fn mr_service() -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
+    let s: String = VERSION.unwrap_or("unknown").to_string();
+    Ok(rmp_serde::to_vec(&s)?)
+}
+
 fn mr_node_score_null(ego: &str, target: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
     let w: Weight =
         GraphSingleton::contexts()?
@@ -146,8 +153,17 @@ fn mr_node_score_null(ego: &str, target: &str) -> Result<Vec<u8>, Box<dyn std::e
                 let mut rank = GraphSingleton::get_rank1(&context).ok()?;
                 let ego_id: NodeId = GraphSingleton::node_name_to_id(ego).ok()?; // thread safety?
                 let target_id: NodeId = GraphSingleton::node_name_to_id(target).ok()?; // thread safety?
+                /*
                 let _ = rank.calculate(ego_id, *NUM_WALK).ok()?;
                 rank.get_node_score(ego_id, target_id).ok()
+                */
+                match rank.get_node_score(ego_id, target_id) {
+                    Err(MeritRankError::NodeDoesNotCalculated) => {
+                        let _ = rank.calculate(ego_id, *NUM_WALK).ok()?;
+                        rank.get_node_score(ego_id, target_id).ok()
+                    },
+                    other => other.ok()
+                }
             }) // just skip errors in contexts
             .sum();
     let result: Vec<(&str, &str, f64)> = [(ego, target, w)].to_vec();
@@ -167,25 +183,37 @@ fn node_id2string(node_id: &NodeId) -> String {
 
 fn mr_scores_null(ego: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
     let result: Vec<_> =
-        GraphSingleton::contexts()?
+        GraphSingleton::contexts()? // .push(null)
             .iter()
             .filter_map(|context| {
                 let mut rank = GraphSingleton::get_rank1(&context).ok()?;
-                let node_id: NodeId = GraphSingleton::node_name_to_id(ego).ok()?; // thread safety?
+                let ego_id: NodeId = GraphSingleton::node_name_to_id(ego).ok()?; // thread safety?
+
+                /*
                 let _ = rank.calculate(node_id, *NUM_WALK).ok()?;
-                let rows: Vec<_> = rank
-                    .get_ranks(node_id, None).ok()?
-                    .into_iter()
-                    .map(|(n, s)| {
-                        (
+                let rank_result0 = rank.get_ranks(node_id, None).ok()?;
+                */
+                let rank_result = match rank.get_ranks(ego_id, None) {
+                    Err(MeritRankError::NodeDoesNotCalculated) => {
+                        let _ = rank.calculate(ego_id, *NUM_WALK).ok()?;
+                        rank.get_ranks(ego_id, None).ok()
+                    },
+                    other => other.ok()
+                };
+                let rows: Vec<_> =
+                    rank_result?
+                        .into_iter()
+                        .map(|(n, s)| {
                             (
-                                ego,
-                                GraphSingleton::node_id_to_name(n).unwrap_or(node_id2string(&n))
-                            ),
-                            s,
-                        )
-                    })
-                    .collect();
+                                (
+                                    ego,
+                                    GraphSingleton::node_id_to_name(n)
+                                        .unwrap_or(node_id2string(&n))
+                                ),
+                                s,
+                            )
+                        })
+                        .collect();
                 Some(rows)
             })
             .flatten()
@@ -213,8 +241,14 @@ impl GraphContext {
         }
     }
     pub fn new(context_init: &str) -> GraphContext {
-        GraphContext {
-            context: Some(context_init.to_string())
+        if context_init.is_empty() {
+            GraphContext {
+                context: None
+            }
+        } else {
+            GraphContext {
+                context: Some(context_init.to_string())
+            }
         }
     }
 
@@ -224,7 +258,9 @@ impl GraphContext {
     }
 
     pub fn process(&self, slice: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        if let Ok(((("src", "=", ego), ("dest", "=", target)), (), "null")) = rmp_serde::from_slice(slice) {
+        if let Ok("ver") = rmp_serde::from_slice(slice) {
+            mr_service()
+        } else if let Ok(((("src", "=", ego), ("dest", "=", target)), (), "null")) = rmp_serde::from_slice(slice) {
             mr_node_score_null(ego, target)
         } else if let Ok(((("src", "=", ego), ), (), "null")) = rmp_serde::from_slice(slice) {
             mr_scores_null(ego)
@@ -233,25 +269,33 @@ impl GraphContext {
         } else if let Ok(((("src", "=", ego), ("dest", "=", target)), ())) = rmp_serde::from_slice(slice) {
             self.mr_node_score(ego, target)
         } else if let Ok(((("src", "=", ego), ), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, "", f64::MIN, true, None)
-        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt)), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, target_like, score_gt, false, None)
-        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte)), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, target_like, score_gte, true, None)
-        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, target_like, score_gt, false, limit)
-        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
-            self.mr_scores(ego, target_like, score_gte, true, limit)
+            self.mr_scores(ego, "", false, f64::MIN, true, f64::MAX, true, None)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt), ("score", "<", score_lt)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, false, score_gt, false, score_lt, false, None)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte), ("score", "<", score_lt)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, false, score_gte, true, score_lt, false, None)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt), ("score", "<=", score_lt)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, false, score_gt, false, score_lt, true, None)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte), ("score", "<=", score_lt)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, false, score_gte, true, score_lt, true, None)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("hide_personal", hide_personal), ("score", ">", score_gt), ("score", "<", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, hide_personal, score_gt, false, score_lt, false, limit)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("hide_personal", hide_personal), ("score", ">=", score_gte), ("score", "<", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, hide_personal, score_gte, true, score_lt, false, limit)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("hide_personal", hide_personal), ("score", ">", score_gt), ("score", "<=", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, hide_personal, score_gt, false, score_lt, true, limit)
+        } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("hide_personal", hide_personal), ("score", ">=", score_gte), ("score", "<=", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+            self.mr_scores(ego, target_like, hide_personal, score_gte, true, score_lt, true, limit)
         } else if let Ok((((subject, object, amount), ), ())) = rmp_serde::from_slice(slice) {
             self.mr_edge(subject, object, amount)
         } else if let Ok(((("src", "delete", ego), ("dest", "delete", target)), ())) = rmp_serde::from_slice(slice) {
             self.mr_delete_edge(ego, target)
         } else if let Ok(((("src", "delete", ego), ), ())) = rmp_serde::from_slice(slice) {
             self.mr_delete_node(ego)
-        } else if let Ok((((ego, "gravity", focus), ), ())) = rmp_serde::from_slice(slice) {
-            self.mr_gravity_graph(ego, focus, true, 3)
-        } else if let Ok((((ego, "gravity_nodes", focus), ), ())) = rmp_serde::from_slice(slice) {
-            self.mr_gravity_nodes(ego, focus)
+        } else if let Ok((((ego, "gravity", focus), positive_only, limit), ())) = rmp_serde::from_slice(slice) {
+            self.mr_gravity_graph(ego, focus, positive_only/* true */, limit/* 3 */)
+        } else if let Ok((((ego, "gravity_nodes", focus), positive_only, limit), ())) = rmp_serde::from_slice(slice) {
+            self.mr_gravity_nodes(ego, focus, positive_only /* false */, limit /* 3 */)
         } else if let Ok((((ego, "connected"), ), ())) = rmp_serde::from_slice(slice) {
             self.mr_connected(ego)
         } else if let Ok(("for_beacons_global", ())) = rmp_serde::from_slice(slice) {
@@ -271,13 +315,15 @@ impl GraphContext {
         match &self.context {
             // TODO: it's thread safe as get_rank/get_rank1 do safe copy all the graph now
             None => GraphSingleton::get_rank(),
-            Some(context) => GraphSingleton::get_rank1(&context),
+            Some(ctx) if ctx.is_empty() => GraphSingleton::get_rank(),
+            Some(ctx) => GraphSingleton::get_rank1(&ctx),
         }
     }
 
     fn get_node_id(&self, graph: &mut MutexGuard<GraphSingleton>, name: &str) -> NodeId {
         match &self.context {
             None => graph.get_node_id(name),
+            Some(ctx) if ctx.is_empty() =>  graph.get_node_id(name),
             Some(ctx) => graph.get_node_id1(ctx.as_str(), name)
         }
     }
@@ -293,12 +339,18 @@ impl GraphContext {
         Ok(v)
     }
 
-    fn mr_scores(&self, ego: &str, target_like: &str, score_gt: f64, score_gte: bool, limit: Option<i32>) ->
+    fn mr_scores(&self, ego: &str,
+                 target_like: &str,
+                 hide_personal: bool,
+                 score_lt: f64, score_lte: bool,
+                 score_gt: f64, score_gte: bool,
+                 limit: Option<i32>) ->
         Result<Vec<u8>, Box<dyn std::error::Error + 'static>>
     {
         let mut rank = self.get_rank()?;
         let node_id: NodeId = GraphSingleton::node_name_to_id(ego)?; // thread safety?
         let _ = rank.calculate(node_id, *NUM_WALK)?;
+
         let result = rank
             .get_ranks(node_id, None)?
             .into_iter()
@@ -310,7 +362,18 @@ impl GraphContext {
                 )
             })
             .filter(|(_, target, _)| target.starts_with(target_like))
-            .filter(|(_, _, score)| score_gt > *score || (score_gte && score_gt == *score));
+            .filter(|(_, _, score)| score_gt < *score || (score_gte && score_gt == *score))
+            .filter(|(_, _, score)| *score < score_lt || (score_lte && score_lt == *score))
+            .filter(|(ego, target, _)|
+                if hide_personal {
+                    match GraphSingleton::node_name_to_id(target) { // thread safety?
+                        Ok(target_id) =>
+                            !((target.starts_with("C") || target.starts_with("B")) &&
+                                rank.get_edge(target_id, node_id).is_some()),
+                        _ => true
+                    }
+                } else { true }
+            );
 
         let limited: Vec<(&str, String, Weight)> =
             match limit {
@@ -385,6 +448,8 @@ impl GraphContext {
                 .remove_edge(subject_id.into(), object_id.into());
         }
 
+        // TODO: used node garbage collection
+
         Ok(EMPTY_RESULT.to_vec())
     }
 
@@ -417,16 +482,20 @@ impl GraphContext {
         ego: &str,
         focus: &str,
         positive_only: bool,
-        limit: usize, /* | None */
+        limit: Option<i32>,
     ) -> Result<
             (Vec<(String, String, Weight)>, HashMap<String, Weight>),
             Box<dyn std::error::Error + 'static>
     > {
         // let rank: MeritRank = self.get_rank()?;
+        let mut rank: MeritRank = self.get_rank()?;
         // rank.calculate need mutable rank
+        println!("gravity_graph: got rank");
+
         match GRAPH.lock() {
             Ok(graph) => {
-                let mut rank: MeritRank = self.get_rank()?;
+                println!("gravity_graph: got graph");
+                //let mut rank: MeritRank = self.get_rank()?; // ***
                 // MeritRank::new(graph.borrow_graph().clone())?;
                 // ? should we change weight/scores in GRAPH ?
 
@@ -517,7 +586,10 @@ impl GraphContext {
 
                 // for dest in sorted(neighbours, key=lambda x: self.get_node_score(ego, x))[limit:]:
                 let limited: Vec<&(&EdgeIndex, &NodeIndex)> =
-                    sorted.iter().map(|(_, tuple)| tuple).take(limit).collect();
+                    sorted.iter()
+                        .map(|(_, tuple)| tuple)
+                        .take(limit.unwrap_or(i32::MAX).try_into().unwrap())
+                        .collect();
 
                 println!("sorted.size={}", sorted.len());
                 println!("limited.size={}", limited.len());
@@ -538,7 +610,7 @@ impl GraphContext {
                 // add_path_to_graph(G, ego, focus)
                 // Note: no loops or "self edges" are expected in the path
                 let ok: Result<(), GraphManipulationError> = {
-                    let v3: Vec<&NodeId> = path.iter().take(3).collect::<Vec<&NodeId>>();
+                    let v3: Vec<&NodeId> = path.iter().take(limit.try_into().unwrap()).collect::<Vec<&NodeId>>(); // was: (3)
                     if let Some((&a, &b, &c)) = v3.clone().into_iter().collect_tuple() {
                         // # merge transitive edges going through comments and beacons
 
@@ -684,7 +756,7 @@ impl GraphContext {
         ego: &str,
         focus: &str,
         positive_only: bool,
-        limit: usize
+        limit: Option<i32>
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
         println!("mr_gravity_graph({ego}, {focus})");
         let (result, _) = self.gravity_graph(ego, focus, positive_only, limit)?;
@@ -696,10 +768,12 @@ impl GraphContext {
         &self,
         ego: &str,
         focus: &str,
+        positive_only: bool,
+        limit: Option<i32>
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
         println!("mr_gravity_node({ego}, {focus})");
         // TODO: change HashMap to string pairs here!?
-        let (_, hash_map) = self.gravity_graph(ego, focus, false, 3)?;
+        let (_, hash_map) = self.gravity_graph(ego, focus, positive_only, limit)?;
         let result: Vec<_> = hash_map.iter().collect();
         let v: Vec<u8> = rmp_serde::to_vec(&result)?;
         Ok(v)
