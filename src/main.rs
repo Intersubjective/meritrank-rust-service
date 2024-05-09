@@ -610,7 +610,7 @@ impl GraphContext {
                 // add_path_to_graph(G, ego, focus)
                 // Note: no loops or "self edges" are expected in the path
                 let ok: Result<(), GraphManipulationError> = {
-                    let v3: Vec<&NodeId> = path.iter().take(limit.try_into().unwrap()).collect::<Vec<&NodeId>>(); // was: (3)
+                    let v3: Vec<&NodeId> = path.iter().take(limit.unwrap().try_into().unwrap()).collect::<Vec<&NodeId>>(); // was: (3)
                     if let Some((&a, &b, &c)) = v3.clone().into_iter().collect_tuple() {
                         // # merge transitive edges going through comments and beacons
 
