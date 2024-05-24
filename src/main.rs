@@ -948,3 +948,76 @@ impl GraphContext {
         Ok(v)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_context_is_sum() {
+        let x = GraphContext::new("X");
+        let y = GraphContext::new("Y");
+
+        let _ = x.mr_edge("U1", "U2", 1.0).unwrap();
+        let _ = y.mr_edge("U1", "U2", 2.0).unwrap();
+
+        let edges = GraphContext::null().mr_edges().unwrap();
+
+        let res_expected : Vec<(String, String, Weight)> = vec![
+            ("U1".to_string(), "U2".to_string(), 3.0)
+        ];
+
+        let edges_expected = rmp_serde::to_vec(&res_expected).unwrap();
+
+        assert_eq!(edges, edges_expected);
+
+        let _ = x.mr_delete_edge("U1", "U2").unwrap();
+        let _ = y.mr_delete_edge("U1", "U2").unwrap();
+    }
+
+    #[test]
+    fn delete_contexted_edge() {
+        let x = GraphContext::new("X");
+        let y = GraphContext::new("Y");
+
+        let _ = x.mr_edge("U1", "U2", 1.0).unwrap();
+        let _ = y.mr_edge("U1", "U2", 2.0).unwrap();
+        let _ = x.mr_delete_edge("U1", "U2").unwrap();
+
+        let edges = GraphContext::null().mr_edges().unwrap();
+
+        let res_expected : Vec<(String, String, Weight)> = vec![
+            ("U1".to_string(), "U2".to_string(), 2.0)
+        ];
+
+        let edges_expected = rmp_serde::to_vec(&res_expected).unwrap();
+
+        assert_eq!(edges, edges_expected);
+
+        let _ = y.mr_delete_edge("U1", "U2").unwrap();
+    }
+
+    #[test]
+    fn null_context_invariant() {
+        let x = GraphContext::new("X");
+        let y = GraphContext::new("Y");
+
+        let _ = x.mr_edge("U1", "U2", 1.0).unwrap();
+        let _ = y.mr_edge("U1", "U2", 2.0).unwrap();
+        let _ = x.mr_delete_edge("U1", "U2").unwrap();
+        let _ = x.mr_edge("U1", "U2", 1.0).unwrap();
+
+        let edges = GraphContext::null().mr_edges().unwrap();
+
+        let res_expected : Vec<(String, String, Weight)> = vec![
+            ("U1".to_string(), "U2".to_string(), 3.0)
+        ];
+
+        let edges_expected = rmp_serde::to_vec(&res_expected).unwrap();
+
+        assert_eq!(edges, edges_expected);
+
+        let _ = x.mr_delete_edge("U1", "U2").unwrap();
+        let _ = y.mr_delete_edge("U1", "U2").unwrap();
+    }
+}
