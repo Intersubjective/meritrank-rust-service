@@ -983,15 +983,16 @@ mod tests {
         let _ = x.mr_edge("U1", "U2", 1.0).unwrap();
         let _ = y.mr_edge("U1", "U2", 2.0).unwrap();
 
-        let edges = GraphContext::null().mr_edges().unwrap();
+        let edges : Vec<(String, String, Weight)> = rmp_serde::from_slice(
+            GraphContext::null().mr_edges()
+                .unwrap().as_slice()
+        ).unwrap();
 
         let edges_expected : Vec<(String, String, Weight)> = vec![
             ("U1".to_string(), "U2".to_string(), 3.0)
         ];
 
-        let bytes_expected = rmp_serde::to_vec(&edges_expected).unwrap();
-
-        assert_eq!(edges, bytes_expected);
+        assert_eq!(edges, edges_expected);
 
         let _ = x.mr_delete_edge("U1", "U2").unwrap();
         let _ = y.mr_delete_edge("U1", "U2").unwrap();
@@ -1006,15 +1007,16 @@ mod tests {
         let _ = y.mr_edge("U1", "U2", 2.0).unwrap();
         let _ = x.mr_delete_edge("U1", "U2").unwrap();
 
-        let edges = GraphContext::null().mr_edges().unwrap();
+        let edges : Vec<(String, String, Weight)> = rmp_serde::from_slice(
+            GraphContext::null().mr_edges()
+                .unwrap().as_slice()
+        ).unwrap();
 
         let edges_expected : Vec<(String, String, Weight)> = vec![
             ("U1".to_string(), "U2".to_string(), 2.0)
         ];
 
-        let bytes_expected = rmp_serde::to_vec(&edges_expected).unwrap();
-
-        assert_eq!(edges, bytes_expected);
+        assert_eq!(edges, edges_expected);
 
         let _ = y.mr_delete_edge("U1", "U2").unwrap();
     }
@@ -1029,15 +1031,16 @@ mod tests {
         let _ = x.mr_delete_edge("U1", "U2").unwrap();
         let _ = x.mr_edge("U1", "U2", 1.0).unwrap();
 
-        let edges = GraphContext::null().mr_edges().unwrap();
+        let edges : Vec<(String, String, Weight)> = rmp_serde::from_slice(
+            GraphContext::null().mr_edges()
+                .unwrap().as_slice()
+        ).unwrap();
 
         let edges_expected : Vec<(String, String, Weight)> = vec![
             ("U1".to_string(), "U2".to_string(), 3.0)
         ];
 
-        let bytes_expected = rmp_serde::to_vec(&edges_expected).unwrap();
-
-        assert_eq!(edges, bytes_expected);
+        assert_eq!(edges, edges_expected);
 
         let _ = x.mr_delete_edge("U1", "U2").unwrap();
         let _ = y.mr_delete_edge("U1", "U2").unwrap();
