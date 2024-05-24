@@ -364,7 +364,7 @@ impl GraphContext {
             .filter(|(_, target, _)| target.starts_with(target_like))
             .filter(|(_, _, score)| score_gt < *score || (score_gte && score_gt == *score))
             .filter(|(_, _, score)| *score < score_lt || (score_lte && score_lt == *score))
-            .filter(|(ego, target, _)|
+            .filter(|(_ego, target, _)|
                 if hide_personal {
                     match GraphSingleton::node_name_to_id(target) { // thread safety?
                         Ok(target_id) =>
