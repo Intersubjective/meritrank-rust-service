@@ -1,3 +1,8 @@
+//  FIXME
+//  Floating-point arithmetic for weight calculation will
+//  break invariance.
+//
+
 use std::thread;
 use std::time::Duration;
 use std::env::var;
@@ -434,21 +439,35 @@ impl GraphContext {
         subject: &str,
         object: &str,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
-        let mut graph = GRAPH.lock()?;
-        let subject_id = self.get_node_id(&mut graph, subject);
-        let object_id = self.get_node_id(&mut graph, object);
-
-        graph
-            .borrow_graph_mut()
-            .remove_edge(subject_id.into(), object_id.into());
+        let mut graph      = GRAPH.lock()?;
+        let     subject_id = self.get_node_id(&mut graph, subject);
+        let     object_id  = self.get_node_id(&mut graph, object);
 
         if let Some(context) = &self.context {
+            let contexted_graph = graph.borrow_graph_mut1(context);
+            let old_weight =
+                contexted_graph
+                    .edge_weight(subject_id.into(), object_id.into())
+                    .unwrap_or(0.0);
+
+            contexted_graph
+                .remove_edge(subject_id.into(), object_id.into());
+
+            let null_graph  = graph.borrow_graph_mut();
+            let null_weight = null_graph.edge_weight(subject_id.into(), object_id.into()).unwrap_or(0.0);
+            let new_weight  = null_weight - old_weight;
+
+            let _ = null_graph.upsert_edge(subject_id.into(), object_id.into(), new_weight)?;
+
+            //  TODO
+            //  Count all countexts.
+        } else {
             graph
-                .borrow_graph_mut1(context)
+                .borrow_graph_mut()
                 .remove_edge(subject_id.into(), object_id.into());
         }
 
-        // TODO: used node garbage collection
+        // TODO: use node garbage collection
 
         Ok(EMPTY_RESULT.to_vec())
     }
@@ -953,6 +972,9 @@ impl GraphContext {
 mod tests {
     use super::*;
 
+    //  In null context, edge weight is always a sum of all contexts.
+    //
+
     #[test]
     fn null_context_is_sum() {
         let x = GraphContext::new("X");
@@ -963,13 +985,13 @@ mod tests {
 
         let edges = GraphContext::null().mr_edges().unwrap();
 
-        let res_expected : Vec<(String, String, Weight)> = vec![
+        let edges_expected : Vec<(String, String, Weight)> = vec![
             ("U1".to_string(), "U2".to_string(), 3.0)
         ];
 
-        let edges_expected = rmp_serde::to_vec(&res_expected).unwrap();
+        let bytes_expected = rmp_serde::to_vec(&edges_expected).unwrap();
 
-        assert_eq!(edges, edges_expected);
+        assert_eq!(edges, bytes_expected);
 
         let _ = x.mr_delete_edge("U1", "U2").unwrap();
         let _ = y.mr_delete_edge("U1", "U2").unwrap();
@@ -986,13 +1008,13 @@ mod tests {
 
         let edges = GraphContext::null().mr_edges().unwrap();
 
-        let res_expected : Vec<(String, String, Weight)> = vec![
+        let edges_expected : Vec<(String, String, Weight)> = vec![
             ("U1".to_string(), "U2".to_string(), 2.0)
         ];
 
-        let edges_expected = rmp_serde::to_vec(&res_expected).unwrap();
+        let bytes_expected = rmp_serde::to_vec(&edges_expected).unwrap();
 
-        assert_eq!(edges, edges_expected);
+        assert_eq!(edges, bytes_expected);
 
         let _ = y.mr_delete_edge("U1", "U2").unwrap();
     }
@@ -1009,13 +1031,13 @@ mod tests {
 
         let edges = GraphContext::null().mr_edges().unwrap();
 
-        let res_expected : Vec<(String, String, Weight)> = vec![
+        let edges_expected : Vec<(String, String, Weight)> = vec![
             ("U1".to_string(), "U2".to_string(), 3.0)
         ];
 
-        let edges_expected = rmp_serde::to_vec(&res_expected).unwrap();
+        let bytes_expected = rmp_serde::to_vec(&edges_expected).unwrap();
 
-        assert_eq!(edges, edges_expected);
+        assert_eq!(edges, bytes_expected);
 
         let _ = x.mr_delete_edge("U1", "U2").unwrap();
         let _ = y.mr_delete_edge("U1", "U2").unwrap();
