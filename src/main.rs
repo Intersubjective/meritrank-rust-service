@@ -501,7 +501,7 @@ impl GraphContext {
         ego: &str,
         focus: &str,
         positive_only: bool,
-        limit: Option<i32>,
+        limit: i32,
     ) -> Result<
             (Vec<(String, String, Weight)>, HashMap<String, Weight>),
             Box<dyn std::error::Error + 'static>
@@ -607,7 +607,7 @@ impl GraphContext {
                 let limited: Vec<&(&EdgeIndex, &NodeIndex)> =
                     sorted.iter()
                         .map(|(_, tuple)| tuple)
-                        .take(limit.unwrap_or(i32::MAX).try_into().unwrap())
+                        .take(limit.try_into().unwrap())
                         .collect();
 
                 println!("sorted.size={}", sorted.len());
@@ -629,7 +629,9 @@ impl GraphContext {
                 // add_path_to_graph(G, ego, focus)
                 // Note: no loops or "self edges" are expected in the path
                 let ok: Result<(), GraphManipulationError> = {
-                    let v3: Vec<&NodeId> = path.iter().take(limit.unwrap().try_into().unwrap()).collect::<Vec<&NodeId>>(); // was: (3)
+                    //  FIXME
+                    //  limit.unwrap() can panic
+                    let v3: Vec<&NodeId> = path.iter().take(limit.try_into().unwrap()).collect::<Vec<&NodeId>>(); // was: (3)
                     if let Some((&a, &b, &c)) = v3.clone().into_iter().collect_tuple() {
                         // # merge transitive edges going through comments and beacons
 
@@ -778,7 +780,7 @@ impl GraphContext {
         limit: Option<i32>
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
         println!("mr_gravity_graph({ego}, {focus})");
-        let (result, _) = self.gravity_graph(ego, focus, positive_only, limit)?;
+        let (result, _) = self.gravity_graph(ego, focus, positive_only, limit.unwrap_or(i32::MAX))?;
         let v: Vec<u8> = rmp_serde::to_vec(&result)?;
         Ok(v)
     }
@@ -792,7 +794,7 @@ impl GraphContext {
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
         println!("mr_gravity_node({ego}, {focus})");
         // TODO: change HashMap to string pairs here!?
-        let (_, hash_map) = self.gravity_graph(ego, focus, positive_only, limit)?;
+        let (_, hash_map) = self.gravity_graph(ego, focus, positive_only, limit.unwrap_or(i32::MAX))?;
         let result: Vec<_> = hash_map.iter().collect();
         let v: Vec<u8> = rmp_serde::to_vec(&result)?;
         Ok(v)
