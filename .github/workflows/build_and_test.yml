@@ -16,3 +16,11 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose -- --test-threads=1
+
+  docker_build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build docker image
+      run: |
+        sudo docker build - < Dockerfile
