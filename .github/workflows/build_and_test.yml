@@ -23,4 +23,4 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build docker image
       run: |
-        sudo docker build - < Dockerfile
+        sudo docker build .
