@@ -3,10 +3,8 @@ FROM rust:1.75.0-alpine as compile
 RUN apk add cmake make gcc musl-dev
 #RUN apt-get update && apt-get -y install cmake
 # RUN cargo build # --target x86_64-unknown-linux-gnu # debug
-RUN mkdir /usr/project
 WORKDIR /usr/project
-COPY Cargo.toml ./Cargo.toml
-COPY src ./src
+COPY . .
 RUN cargo build --release
 RUN cd util/zerorec && cargo build && cargo build --release && cd ../..
 RUN cd util/start && cargo build && cargo build --release && cd ../..
