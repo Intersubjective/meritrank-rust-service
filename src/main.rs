@@ -787,8 +787,15 @@ impl GraphContext {
 
     fn get_connected(&self, ego : &str) -> Result<Vec<(String, String)>, Box<dyn std::error::Error + 'static>> {
         let mut graph = GRAPH.lock()?;
-        let node_id: NodeId = graph.node_name_to_id_unsafe(ego)?;
-        let my_graph: &MyGraph =
+
+        let node_id = graph.node_name_to_id_unsafe(ego);
+
+        match node_id {
+            Err(_) => return Ok(Vec::<(String, String)>::new()),
+            _      => {}
+        };
+
+        let my_graph : &MyGraph =
             match &self.context {
                 None      => graph.borrow_graph(),
                 Some(ctx) => graph.borrow_graph1(ctx)
@@ -796,7 +803,7 @@ impl GraphContext {
 
         let result: Vec<(String, String)> =
             my_graph
-                .connected(node_id)
+                .connected(node_id?)
                 .iter()
                 .map(|(_edge_index, from, to)|
                     (
@@ -813,7 +820,11 @@ impl GraphContext {
         &self,
         ego: &str
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
-        Ok(rmp_serde::to_vec(&self.get_connected(ego)?)?)
+        let edges = self.get_connected(ego)?;
+        if edges.is_empty() {
+            return Err("No edges".into());
+        }
+        return Ok(rmp_serde::to_vec(&edges)?);
     }
 
     fn get_reduced_graph(&self) -> Result<Vec<(String, String, f64)>, Box<dyn std::error::Error + 'static>> {
@@ -1001,6 +1012,9 @@ impl GraphContext {
     }
 
     fn mr_zerorec(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
+        //  NOTE
+        //  This func is not thread-safe.
+
         self.delete_from_zero()?;
 
         let nodes = self.top_nodes()?;
