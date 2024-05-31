@@ -2,7 +2,6 @@ use std::env::var;
 use lazy_static::lazy_static;
 use nng::{Message, Protocol, Socket};
 use serde::Deserialize;
-use simple_pagerank::Pagerank;
 
 lazy_static! {
     static ref SERVICE_URL: String =
@@ -30,7 +29,7 @@ fn main() {
     println!("Zero node recalculation");
     println!("Using service at {}", *SERVICE_URL);
 
-    request(&rmp_serde::to_vec(&("zerorec", ())))?;
+    let _ : Vec<u8> = request(&rmp_serde::to_vec(&("zerorec", ())).unwrap()).unwrap();
 
     println!("Done!")
 }
