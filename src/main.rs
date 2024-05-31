@@ -17,8 +17,6 @@ use mrgraph::error::GraphManipulationError;
 use mrgraph::mrgraph::{GraphSingleton, GRAPH};
 use mrgraph::mrgraph::NodeId;
 use meritrank::{MeritRank, MyGraph, MeritRankError, Weight};
-use std::io;
-use std::io::prelude::*;
 
 #[cfg(test)]
 mod tests;
@@ -843,14 +841,9 @@ impl GraphContext {
             return Ok(Vec::new());
         }
 
-        println!("Calculate MeritRank for {} users...", users.len());
-
-        for (i, (_, node_id)) in users.iter().enumerate() {
-            print!("MeritRank {}% \r", (i * 100) / users.len());
-            let _ = io::stdout().flush();
+        for (_, node_id) in users.iter() {
             rank.calculate(*node_id, *NUM_WALK)?;
         }
-        println!("MeritRank 100%");
 
         let edges : Vec<(NodeId, NodeId, Weight)> =
             users.into_iter()
@@ -957,12 +950,9 @@ impl GraphContext {
     fn delete_from_zero(&self) -> Result<(), Box<dyn std::error::Error + 'static>> {
         let edges = self.get_connected(&ZERO_NODE)?;
 
-        for (i, (src, dst)) in edges.iter().enumerate() {
-            print!("Delete from zero {}% \r", (i * 100) / edges.len());
-            let _ = io::stdout().flush();
+        for (src, dst) in edges.iter() {
             let _ = self.mr_delete_edge(src, dst)?;
         }
-        println!("Delete from zero 100% - done.");
 
         return Ok(());
     }
@@ -986,10 +976,7 @@ impl GraphContext {
                 pr.add_edge(source, target);
             });
 
-        print!("Page rank... \r");
-        let _ = io::stdout().flush();
         pr.calculate();
-        println!("Page rank... - done.");
 
         let (nodes, scores): (Vec<&&String>, Vec<f64>) =
             pr
@@ -1018,12 +1005,9 @@ impl GraphContext {
 
         let nodes = self.top_nodes()?;
 
-        for (i, (name, amount)) in nodes.iter().enumerate() {
-            print!("Zerorec {}% \r", (i * 100) / nodes.len());
-            let _ = io::stdout().flush();
+        for (name, amount) in nodes.iter() {
             self.mr_edge(ZERO_NODE.as_str(), name.as_str(), *amount)?;
         }
-        println!("Zerorec 100% - done");
 
         return Ok(rmp_serde::to_vec(&"Ok".to_string())?);
     }

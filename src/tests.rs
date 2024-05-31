@@ -2398,7 +2398,15 @@ fn zerorec() {
 
     let _ = x.mr_zerorec().unwrap();
 
+    let (res, _) = x.gravity_graph("Uadeb43da4abb", ZERO_NODE.as_str(), false, 10000).unwrap();
+
+    let n = res.len();
+
+    assert!(n > 42 && n < 51);
+
     delete_testing_edges();
+
+    let _ = x.mr_delete_node(ZERO_NODE.as_str()).unwrap();
 }
 
 //  In null context, edge weight is always a sum of all contexts.
