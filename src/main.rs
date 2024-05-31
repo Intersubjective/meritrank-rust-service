@@ -12,11 +12,16 @@ use std::collections::HashMap;
 use std::sync::MutexGuard;
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use nng::{Aio, AioResult, Context, Message, Protocol, Socket};
+use simple_pagerank::Pagerank;
 use mrgraph::error::GraphManipulationError;
 use mrgraph::mrgraph::{GraphSingleton, GRAPH};
 use mrgraph::mrgraph::NodeId;
 use meritrank::{MeritRank, MyGraph, MeritRankError, Weight};
+use std::io;
+use std::io::prelude::*;
 
+#[cfg(test)]
+mod tests;
 
 lazy_static::lazy_static! {
     static ref SERVICE_URL: String =
@@ -24,7 +29,7 @@ lazy_static::lazy_static! {
             .unwrap_or("tcp://127.0.0.1:10234".to_string());
 
     static ref NUM_WALK: usize =
-        var("GRAVITY_NUM_WALK")
+        var("NUM_WALK")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(10000);
@@ -46,6 +51,16 @@ lazy_static::lazy_static! {
         const EMPTY_ROWS_VEC: Vec<(&str, &str, f64)> = Vec::new();
         rmp_serde::to_vec(&EMPTY_ROWS_VEC).unwrap()
     };
+
+    static ref ZERO_NODE: String =
+        var("ZERO_NODE")
+            .unwrap_or("U000000000000".to_string());
+
+    static ref TOP_NODES_LIMIT: usize =
+        var("TOP_NODES_LIMIT")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(100);
 }
 
 const VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
@@ -119,8 +134,7 @@ fn worker_callback(aio: Aio, ctx: &Context, res: AioResult) {
             ctx.send(&aio, msg.as_slice()).unwrap();
         }
 
-        AioResult::Sleep(_) =>
-            println!("Slept!"),
+        AioResult::Sleep(_) => {},
 
         // Anything else is an error and we will just panic.
         AioResult::Send(Err(e)) =>
@@ -139,7 +153,6 @@ fn process(req: Message) -> Vec<u8> {
     ctx.process(slice)
         .map(|msg| msg)
         .unwrap_or_else(|e| {
-            println!("{}", e);
             let s: String = e.to_string();
             rmp_serde::to_vec(&s).unwrap()
         })
@@ -258,7 +271,6 @@ impl GraphContext {
     }
 
     pub fn process_context(context: &str, payload: Vec<u8>)  -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        println!("context={context}");
         GraphContext::new(&context).process(payload.as_slice())
     }
 
@@ -309,9 +321,10 @@ impl GraphContext {
             self.mr_nodes()
         } else if let Ok(("edges", ())) = rmp_serde::from_slice(slice) {
             self.mr_edges()
+        } else if let Ok(("zerorec", ())) = rmp_serde::from_slice(slice) {
+            self.mr_zerorec()
         } else {
             let err: String = format!("Error: Cannot understand request {:?}", slice);
-            eprintln!("{}", err);
             Err(err.into())
         }
     }
@@ -406,7 +419,6 @@ impl GraphContext {
         let object_id = self.get_node_id(&mut graph, object);
 
         if let Some(context) = &self.context {
-            println!("mr_edge contexted: {context}");
             let contexted_graph = graph.borrow_graph_mut1(context);
             let old_weight =
                 contexted_graph
@@ -509,18 +521,15 @@ impl GraphContext {
         // let rank: MeritRank = self.get_rank()?;
         let mut rank: MeritRank = self.get_rank()?;
         // rank.calculate need mutable rank
-        println!("gravity_graph: got rank");
 
         match GRAPH.lock() {
             Ok(graph) => {
-                println!("gravity_graph: got graph");
                 //let mut rank: MeritRank = self.get_rank()?; // ***
                 // MeritRank::new(graph.borrow_graph().clone())?;
                 // ? should we change weight/scores in GRAPH ?
 
                 // focus_id in graph
                 let focus_id: NodeId = graph.node_name_to_id_unsafe(focus)?;
-                println!("focus_id={:?}", focus_id);
 
                 let mut copy: MyGraph = MyGraph::new();
                 let source_graph: &MyGraph =
@@ -533,7 +542,6 @@ impl GraphContext {
                 let focus_vector: Vec<(NodeId, NodeId, Weight)> =
                     source_graph.edges(focus_id).into_iter().flatten().collect();
 
-                println!("gravity_graph: focus_vector.size={}", focus_vector.len());
                 for (a_id, b_id, w_ab) in focus_vector {
 
                     //let a: String = graph.node_id_to_name_unsafe(a_id)?;
@@ -546,7 +554,6 @@ impl GraphContext {
                         // assert!( get_edge(a, b) != None);
 
                         let _ = copy.upsert_edge_with_nodes(a_id, b_id, w_ab)?;
-                        println!("copy.add_edge_with_nodes(({:?}, {:?}, {:?});", a_id, b_id, w_ab);
                     } else if b.starts_with("C") || b.starts_with("B") {
                         // ? # For connections user-> comment | beacon -> user,
                         // ? # convolve those into user->user
@@ -577,7 +584,6 @@ impl GraphContext {
                                 w_ab * w_bc * (if w_ab < 0.0f64 && w_bc < 0.0f64 { -1.0f64 } else { 1.0f64 });
 
                             let _ = copy.upsert_edge_with_nodes(a_id, c_id, w_ac)?;
-                            println!("copy.add_edge_with_nodes(({:?}, {:?}, {:?});", a_id, c_id, w_ac);
                         }
                     }
                 }
@@ -586,11 +592,9 @@ impl GraphContext {
                 // neighbours = list(dest for src, dest in G.out_edges(focus))
 
                 let neighbours: Vec<(EdgeIndex, NodeIndex, NodeId)> = copy.outgoing(focus_id);
-                println!("neighbours.size={}", neighbours.len());
 
                 // ego_id in graph
                 let ego_id: NodeId = graph.node_name_to_id_unsafe(ego)?;
-                println!("ego_id={:?}", ego_id);
 
                 let mut sorted: Vec<(Weight, (&EdgeIndex, &NodeIndex))> =
                     neighbours
@@ -610,13 +614,9 @@ impl GraphContext {
                         .take(limit.try_into().unwrap())
                         .collect();
 
-                println!("sorted.size={}", sorted.len());
-                println!("limited.size={}", limited.len());
-
                 for (_edge_index, node_index) in limited {
                     let node_id = copy.index2node(**node_index);
                     copy.remove_edge(ego_id, node_id);
-                    println!("copy.remove_edge({:?}, {:?})", ego_id, node_id);
                     //G.remove_node(dest) // ???
                 }
 
@@ -625,7 +625,6 @@ impl GraphContext {
                     copy
                         .shortest_path(ego_id, focus_id)
                         .unwrap_or(Vec::new());
-                println!("path(from={:?}, to={:?})={:?}", ego_id, focus_id, path);
                 // add_path_to_graph(G, ego, focus)
                 // Note: no loops or "self edges" are expected in the path
                 let ok: Result<(), GraphManipulationError> = {
@@ -662,7 +661,6 @@ impl GraphContext {
                             // get_transitive_edge_weight
                             let w_ac: f64 =
                                 w_ab * w_bc * (if w_ab < 0.0f64 && w_bc < 0.0f64 { -1.0f64 } else { 1.0f64 });
-                            println!("[0] copy.add_edge({:?}, {:?}, {w_ac}) (try)", a, c);
                             copy.upsert_edge(a, c, w_ac)?;
                             Ok(())
                         } else if a_name.starts_with("U") {
@@ -673,7 +671,6 @@ impl GraphContext {
                                                 a_name, b_name
                                         )
                                     ))?;
-                            println!("[1] copy.add_edge({:?}, {:?}, {weight}) (try)", a, b);
                             copy.upsert_edge(a, b, weight)?;
                             Ok(())
                         } else {
@@ -697,7 +694,6 @@ impl GraphContext {
                                             a_name, b_name
                                     )
                                 ))?;
-                        println!("[2] copy.add_edge({:?}, {:?}, {weight}) (try)", a, b);
                         copy.upsert_edge(a, b, weight)?;
                         Ok(())
                     } else if v3.len() == 1 {
@@ -709,7 +705,6 @@ impl GraphContext {
                         //let node = mrgraph::meritrank::node::Node::new(focus_id);
                         let node = meritrank::node::Node::new(focus_id);
                         copy.add_node(node);
-                        println!("copy.add_node({:?}) (by node)", focus_id);
                         Ok(())
                     } else {
                         Err(mrgraph::error::GraphManipulationError::DataExtractionFailure(
@@ -723,8 +718,6 @@ impl GraphContext {
                 // todo: just not let them pass into the graph
 
                 let (nodes, edges) = copy.all();
-                println!("copy.nodes.size={}", nodes.len());
-                println!("copy.edges.size={}", edges.len());
 
                 let table: Vec<(String, String, f64)> =
                     edges
@@ -743,9 +736,6 @@ impl GraphContext {
                     nodes
                         .iter()
                         .map(|node_id| {
-                            let test1 = graph.node_id_to_name_unsafe(*node_id);
-                            let test2 = rank.get_node_score(ego_id, *node_id);
-                            println!("\tnode_id={:?}, test1={:?}, test2={:?}", node_id, test1, test2);
                             let name = graph.node_id_to_name_unsafe(*node_id)?;
 
                             if !rank.get_personal_hits().contains_key(&ego_id) {
@@ -760,7 +750,6 @@ impl GraphContext {
                         .flatten()
                         .collect::<HashMap<String, Weight>>();
 
-                println!("nodes_dict.size={}", nodes_dict.len());
                 Ok((table, nodes_dict))
             }
             Err(e) => Err(
@@ -779,7 +768,6 @@ impl GraphContext {
         positive_only: bool,
         limit: Option<i32>
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
-        println!("mr_gravity_graph({ego}, {focus})");
         let (result, _) = self.gravity_graph(ego, focus, positive_only, limit.unwrap_or(i32::MAX))?;
         let v: Vec<u8> = rmp_serde::to_vec(&result)?;
         Ok(v)
@@ -792,7 +780,6 @@ impl GraphContext {
         positive_only: bool,
         limit: Option<i32>
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
-        println!("mr_gravity_node({ego}, {focus})");
         // TODO: change HashMap to string pairs here!?
         let (_, hash_map) = self.gravity_graph(ego, focus, positive_only, limit.unwrap_or(i32::MAX))?;
         let result: Vec<_> = hash_map.iter().collect();
@@ -800,15 +787,12 @@ impl GraphContext {
         Ok(v)
     }
 
-    fn mr_connected(
-        &self,
-        ego: &str
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
+    fn get_connected(&self, ego : &str) -> Result<Vec<(String, String)>, Box<dyn std::error::Error + 'static>> {
         let mut graph = GRAPH.lock()?;
         let node_id: NodeId = graph.node_name_to_id_unsafe(ego)?;
-        let my_graph: &MyGraph = // self.borrow_graph(graph);
+        let my_graph: &MyGraph =
             match &self.context {
-                None => graph.borrow_graph(),
+                None      => graph.borrow_graph(),
                 Some(ctx) => graph.borrow_graph1(ctx)
             };
 
@@ -824,50 +808,51 @@ impl GraphContext {
                 )
                 .collect();
 
-        let v: Vec<u8> = rmp_serde::to_vec(&result)?;
-        Ok(v)
+        return Ok(result);
     }
 
-    fn mr_beacons_global(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
-        let mut rank = self.get_rank()?;
-        let graph = GRAPH.lock()?;
-        let node_names: HashMap<String, NodeId> =
+    fn mr_connected(
+        &self,
+        ego: &str
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
+        Ok(rmp_serde::to_vec(&self.get_connected(ego)?)?)
+    }
+
+    fn get_reduced_graph(&self) -> Result<Vec<(String, String, f64)>, Box<dyn std::error::Error + 'static>> {
+        let mut rank  = self.get_rank()?;
+        let     graph = GRAPH.lock()?;
+
+        let node_names : HashMap<String, NodeId> =
             graph.borrow_node_names().clone();
-        let node_ids: HashMap<NodeId, String> =
+
+        let node_ids : HashMap<NodeId, String> =
             node_names
                 .clone() // ?
                 .into_iter()
                 .map(|(name, id)| (id, name))
                 .collect();
-        /*
-        let my_graph = // self.borrow_graph(graph);
-            match &self.context {
-                None => graph.borrow_graph(),
-                Some(ctx) => graph.borrow_graph1(ctx)
-            };
-        */
-        let users: Vec<(String, NodeId)> =
+
+        let users : Vec<(String, NodeId)> =
             node_names
                 .clone() // ?
                 .into_iter()
                 .filter(|(name, _)| name.starts_with("U")) // filter zero user?
                 .collect();
-        println!("got {} users", users.len());
+
         if users.is_empty() {
             return Ok(Vec::new());
         }
 
-        users.iter().for_each(|(name, node_id)| {
-            println!("recalculation of {name} ...");
-            match rank.calculate(*node_id, *NUM_WALK) {
-                Err(err) =>
-                    println!("Error while recalculating {name} : {err}"),
-                _ => ()
-            }
-        });
-        println!("ranks recalculated ...");
+        println!("Calculate MeritRank for {} users...", users.len());
 
-        let edges: Vec<(NodeId, NodeId, Weight)> =
+        for (i, (_, node_id)) in users.iter().enumerate() {
+            print!("MeritRank {}% \r", (i * 100) / users.len());
+            let _ = io::stdout().flush();
+            rank.calculate(*node_id, *NUM_WALK)?;
+        }
+        println!("MeritRank 100%");
+
+        let edges : Vec<(NodeId, NodeId, Weight)> =
             users.into_iter()
                 .map(|(_name, ego_id)| {
                     let result: Vec<(NodeId, NodeId, Weight)> =
@@ -889,11 +874,10 @@ impl GraphContext {
                 .collect::<Vec<(NodeId, NodeId, Weight)>>();
 
         //let (_, edges) = my_graph.all(); // not optimal
-        println!("mr_beacons_global: total {} edges.", edges.len());
         // Note:
         // Just eat errors in node_id_to_name_unsafe bellow.
         // Should we pass them out?
-        let result: Vec<_> =
+        let result : Vec<(String, String, f64)> =
             edges
                 .iter()
                 .filter(|(ego_id, dest_id, weight)|
@@ -909,17 +893,18 @@ impl GraphContext {
                 )
                 .flat_map(|(ego, dest_id, weight)| {
                     let dest = graph.node_id_to_name_unsafe(*dest_id)?;
-                    Ok::<(String, String, &Weight), GraphManipulationError>((ego, dest, weight))
+                    Ok::<(String, String, Weight), GraphManipulationError>((ego, dest, *weight))
                 })
                 .filter(|(_ego, dest, _weight)|
                     dest.starts_with("U") || dest.starts_with("B")
                 )
                 .collect();
 
-        println!("mr_beacons_global: filtered {} edges.", result.len());
-        let v: Vec<u8> = rmp_serde::to_vec(&result)?;
+        return Ok(result);
+    }
 
-        Ok(v)
+    fn mr_beacons_global(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
+        Ok(rmp_serde::to_vec(&self.get_reduced_graph()?)?)
     }
 
     fn mr_nodes(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
@@ -946,10 +931,10 @@ impl GraphContext {
     }
 
     fn mr_edges(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
-        let mut graph = GRAPH.lock()?;
-        let my_graph = // self.borrow_graph(graph);
+        let mut graph    = GRAPH.lock()?;
+        let     my_graph =
             match &self.context {
-                None => graph.borrow_graph(),
+                None      => graph.borrow_graph(),
                 Some(ctx) => graph.borrow_graph1(ctx)
             };
 
@@ -968,83 +953,78 @@ impl GraphContext {
         let v: Vec<u8> = rmp_serde::to_vec(&result)?;
         Ok(v)
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    fn delete_from_zero(&self) -> Result<(), Box<dyn std::error::Error + 'static>> {
+        let edges = self.get_connected(&ZERO_NODE)?;
 
-    //  In null context, edge weight is always a sum of all contexts.
-    //
+        for (i, (src, dst)) in edges.iter().enumerate() {
+            print!("Delete from zero {}% \r", (i * 100) / edges.len());
+            let _ = io::stdout().flush();
+            let _ = self.mr_delete_edge(src, dst)?;
+        }
+        println!("Delete from zero 100% - done.");
 
-    #[test]
-    fn null_context_is_sum() {
-        let x = GraphContext::new("X");
-        let y = GraphContext::new("Y");
-
-        let _ = x.mr_edge("U1", "U2", 1.0).unwrap();
-        let _ = y.mr_edge("U1", "U2", 2.0).unwrap();
-
-        let edges : Vec<(String, String, Weight)> = rmp_serde::from_slice(
-            GraphContext::null().mr_edges()
-                .unwrap().as_slice()
-        ).unwrap();
-
-        let edges_expected : Vec<(String, String, Weight)> = vec![
-            ("U1".to_string(), "U2".to_string(), 3.0)
-        ];
-
-        assert_eq!(edges, edges_expected);
-
-        let _ = x.mr_delete_edge("U1", "U2").unwrap();
-        let _ = y.mr_delete_edge("U1", "U2").unwrap();
+        return Ok(());
     }
 
-    #[test]
-    fn delete_contexted_edge() {
-        let x = GraphContext::new("X");
-        let y = GraphContext::new("Y");
+    fn top_nodes(&self) -> Result<Vec<(String, f64)>, Box<dyn std::error::Error + 'static>> {
+        let reduced = self.get_reduced_graph()?;
 
-        let _ = x.mr_edge("U1", "U2", 1.0).unwrap();
-        let _ = y.mr_edge("U1", "U2", 2.0).unwrap();
-        let _ = x.mr_delete_edge("U1", "U2").unwrap();
+        if reduced.is_empty() {
+            return Err("Reduced graph empty".into());
+        }
 
-        let edges : Vec<(String, String, Weight)> = rmp_serde::from_slice(
-            GraphContext::null().mr_edges()
-                .unwrap().as_slice()
-        ).unwrap();
+        let mut pr = Pagerank::<&String>::new();
 
-        let edges_expected : Vec<(String, String, Weight)> = vec![
-            ("U1".to_string(), "U2".to_string(), 2.0)
-        ];
+        reduced
+            .iter()
+            .filter(|(source, target, _weight)|
+                *source!=*ZERO_NODE && *target!=*ZERO_NODE
+            )
+            .for_each(|(source, target, _weight)| {
+                // TODO: check weight
+                pr.add_edge(source, target);
+            });
 
-        assert_eq!(edges, edges_expected);
+        print!("Page rank... \r");
+        let _ = io::stdout().flush();
+        pr.calculate();
+        println!("Page rank... - done.");
 
-        let _ = y.mr_delete_edge("U1", "U2").unwrap();
+        let (nodes, scores): (Vec<&&String>, Vec<f64>) =
+            pr
+                .nodes()    // already sorted by score
+                .into_iter()
+                .take(*TOP_NODES_LIMIT)
+                .into_iter()
+                .unzip();
+
+        let res = nodes
+            .into_iter()
+            .cloned()
+            .cloned()
+            .zip(scores)
+            .collect::<Vec<_>>();
+
+        if res.is_empty() {
+            return Err("No top nodes".into());
+        }
+
+        return Ok(res);
     }
 
-    #[test]
-    fn null_context_invariant() {
-        let x = GraphContext::new("X");
-        let y = GraphContext::new("Y");
+    fn mr_zerorec(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
+        self.delete_from_zero()?;
 
-        let _ = x.mr_edge("U1", "U2", 1.0).unwrap();
-        let _ = y.mr_edge("U1", "U2", 2.0).unwrap();
-        let _ = x.mr_delete_edge("U1", "U2").unwrap();
-        let _ = x.mr_edge("U1", "U2", 1.0).unwrap();
+        let nodes = self.top_nodes()?;
 
-        let edges : Vec<(String, String, Weight)> = rmp_serde::from_slice(
-            GraphContext::null().mr_edges()
-                .unwrap().as_slice()
-        ).unwrap();
+        for (i, (name, amount)) in nodes.iter().enumerate() {
+            print!("Zerorec {}% \r", (i * 100) / nodes.len());
+            let _ = io::stdout().flush();
+            self.mr_edge(ZERO_NODE.as_str(), name.as_str(), *amount)?;
+        }
+        println!("Zerorec 100% - done");
 
-        let edges_expected : Vec<(String, String, Weight)> = vec![
-            ("U1".to_string(), "U2".to_string(), 3.0)
-        ];
-
-        assert_eq!(edges, edges_expected);
-
-        let _ = x.mr_delete_edge("U1", "U2").unwrap();
-        let _ = y.mr_delete_edge("U1", "U2").unwrap();
+        return Ok(rmp_serde::to_vec(&"Ok".to_string())?);
     }
 }

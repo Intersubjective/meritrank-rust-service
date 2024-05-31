@@ -15,7 +15,9 @@ jobs:
     - name: Build
       run: cargo build --verbose
     - name: Run tests
-      run: cargo test --verbose -- --test-threads=1
+      run: |
+        export NUM_WALK=50
+        cargo test --verbose -- --test-threads=1
 
   docker_build:
     runs-on: ubuntu-latest
