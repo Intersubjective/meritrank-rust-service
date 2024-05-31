@@ -5,7 +5,7 @@ RUN apk add cmake make gcc musl-dev
 # RUN cargo build # --target x86_64-unknown-linux-gnu # debug
 WORKDIR /usr/project
 COPY . .
-RUN cargo build --release
+RUN cargo build && cargo build --release
 RUN cd util/zerorec && cargo build && cargo build --release && cd ../..
 RUN cd util/start && cargo build && cargo build --release && cd ../..
 
