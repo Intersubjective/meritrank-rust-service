@@ -11,7 +11,7 @@ lazy_static! {
 
 fn request<T: for<'a> Deserialize<'a>>(
     req: &Vec<u8>,
-) -> Result<Vec<T>, Box<dyn std::error::Error + 'static>> {
+) -> Result<String, Box<dyn std::error::Error + 'static>> {
     let client = Socket::new(Protocol::Req0)?;
     client.dial(&SERVICE_URL)?;
     client
@@ -19,17 +19,15 @@ fn request<T: for<'a> Deserialize<'a>>(
         .map_err(|(_, err)| err)?;
     let msg: Message = client.recv()?;
     let slice: &[u8] = msg.as_slice();
-    rmp_serde::from_slice(slice).or_else(|_| {
-        let err: String = rmp_serde::from_slice(slice)?;
-        Err(Box::from(format!("Server error: {}", err)))
-    })
+    return Ok(rmp_serde::from_slice(slice)?);
 }
 
 fn main() {
     println!("Zero node recalculation");
     println!("Using service at {}", *SERVICE_URL);
 
-    let _ : Vec<u8> = request(&rmp_serde::to_vec(&("zerorec", ())).unwrap()).unwrap();
+    let response = request(&rmp_serde::to_vec(&("zerorec", ())).unwrap()).unwrap();
+    println!("Server: {}", response);
 
     println!("Done!")
 }

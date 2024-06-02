@@ -1020,7 +1020,7 @@ impl GraphContext {
         let nodes = self.top_nodes()?;
 
         for (name, amount) in nodes.iter() {
-            self.mr_edge(ZERO_NODE.as_str(), name.as_str(), *amount)?;
+            let _ = self.mr_edge(ZERO_NODE.as_str(), name.as_str(), *amount)?;
         }
 
         return Ok(rmp_serde::to_vec(&"Ok".to_string())?);
