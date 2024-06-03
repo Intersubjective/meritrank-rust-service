@@ -2391,7 +2391,7 @@ fn delete_testing_edges() {
 }
 
 #[test]
-fn zerorec() {
+fn zerorec_graph() {
     let x = GraphContext::null();
 
     put_testing_edges();
@@ -2403,6 +2403,25 @@ fn zerorec() {
     let n = res.len();
 
     assert!(n > 42 && n < 51);
+
+    delete_testing_edges();
+
+    let _ = x.mr_delete_node(ZERO_NODE.as_str()).unwrap();
+}
+
+#[test]
+fn zerorec_graph_positive_only() {
+    let x = GraphContext::null();
+
+    put_testing_edges();
+
+    let _ = x.mr_zerorec().unwrap();
+
+    let (res, _) = x.gravity_graph("Uadeb43da4abb", ZERO_NODE.as_str(), true, 10000).unwrap();
+
+    let n = res.len();
+
+    assert_eq!(n, 0);
 
     delete_testing_edges();
 
