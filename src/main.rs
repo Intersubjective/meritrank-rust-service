@@ -516,9 +516,7 @@ impl GraphContext {
             (Vec<(String, String, Weight)>, HashMap<String, Weight>),
             Box<dyn std::error::Error + 'static>
     > {
-        // let rank: MeritRank = self.get_rank()?;
-        let mut rank: MeritRank = self.get_rank()?;
-        // rank.calculate need mutable rank
+        let mut rank = self.get_rank()?;
 
         match GRAPH.lock() {
             Ok(graph) => {
@@ -526,11 +524,11 @@ impl GraphContext {
                 // MeritRank::new(graph.borrow_graph().clone())?;
                 // ? should we change weight/scores in GRAPH ?
 
-                // focus_id in graph
-                let focus_id: NodeId = graph.node_name_to_id_unsafe(focus)?;
+                let focus_id = graph.node_name_to_id_unsafe(focus)?;
 
-                let mut copy: MyGraph = MyGraph::new();
-                let source_graph: &MyGraph =
+                let mut copy = MyGraph::new();
+
+                let source_graph =
                     if let Some(context) = &self.context {
                         graph.borrow_graph0(context)? // todo // ??
                     } else {
@@ -541,13 +539,24 @@ impl GraphContext {
                     source_graph.edges(focus_id).into_iter().flatten().collect();
 
                 for (a_id, b_id, w_ab) in focus_vector {
-
                     //let a: String = graph.node_id_to_name_unsafe(a_id)?;
                     let b: String = graph.node_id_to_name_unsafe(b_id)?;
 
                     if b.starts_with("U") {
-                        if positive_only && rank.get_node_score(a_id, b_id)? <= 0f64 {
-                            continue;
+                        if positive_only {
+                            let score = match rank.get_node_score(a_id, b_id) {
+                                Ok(x) => x,
+                                Err(MeritRankError::NodeDoesNotCalculated) => {
+                                    rank.calculate(a_id, *GRAVITY_NUM_WALK)?;
+                                    rank.get_node_score(a_id, b_id)?
+                                },
+                                Err(x) => {
+                                    return Err(x.into());
+                                }
+                            };
+                            if score <= 0f64 {
+                                continue;
+                            }
                         }
                         // assert!( get_edge(a, b) != None);
 

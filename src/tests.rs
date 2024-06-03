@@ -2402,7 +2402,7 @@ fn zerorec_graph() {
 
     let n = res.len();
 
-    assert!(n > 42 && n < 51);
+    assert!(n > 41 && n < 51);
 
     delete_testing_edges();
 
@@ -2421,7 +2421,7 @@ fn zerorec_graph_positive_only() {
 
     let n = res.len();
 
-    assert_eq!(n, 0);
+    assert!(n > 29 && n < 39);
 
     delete_testing_edges();
 

@@ -13,12 +13,13 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Build
-      run: cargo build --verbose
+      run: cargo build
     - name: Run tests
       run: |
+        export RUST_TEST_THREADS=1
         export NUM_WALK=50
-        cargo test --verbose -- --test-threads=1
-
+        export GRAVITY_NUM_WALK=50
+        cargo test
   docker_build:
     runs-on: ubuntu-latest
     steps:

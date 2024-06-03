@@ -7,8 +7,8 @@ edition = "2021"
 shared = []
 
 [dependencies]
-mrgraph    = { git = "https://github.com/Intersubjective/mrgraph.git",    branch = "dev", version = "0.0.5" }
-meritrank2 = { git = "https://github.com/Intersubjective/meritrank2.git", branch = "dev", version = "0.5.3" }
+mrgraph    = { git = "https://github.com/Intersubjective/mrgraph.git",    branch = "dev" }
+meritrank2 = { git = "https://github.com/Intersubjective/meritrank2.git", branch = "dev" }
 
 rand = "=0.8.4"
 petgraph = "0.6.3"
