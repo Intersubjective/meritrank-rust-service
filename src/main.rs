@@ -336,7 +336,11 @@ impl GraphContext {
         }
     }
 
-    fn get_node_id(&self, graph: &mut MutexGuard<GraphSingleton>, name: &str) -> NodeId {
+    fn get_node_id(
+        &self,
+        graph : &mut MutexGuard<GraphSingleton>,
+        name  : &str
+    ) -> NodeId {
         match &self.context {
             None => graph.get_node_id(name),
             Some(ctx) if ctx.is_empty() =>  graph.get_node_id(name),
@@ -444,63 +448,67 @@ impl GraphContext {
         Ok(v)
     }
 
-    fn mr_delete_edge(
+    fn delete_edge_locked(
         &self,
-        subject: &str,
-        object: &str,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
-        let mut graph      = GRAPH.lock()?;
-        let     subject_id = self.get_node_id(&mut graph, subject);
-        let     object_id  = self.get_node_id(&mut graph, object);
-
+        graph  : &mut MutexGuard<GraphSingleton>,
+        src_id : NodeId,
+        dst_id : NodeId
+    ) -> Result<(), Box<dyn std::error::Error + 'static>> {
         if let Some(context) = &self.context {
             let contexted_graph = graph.borrow_graph_mut1(context);
             let old_weight =
                 contexted_graph
-                    .edge_weight(subject_id.into(), object_id.into())
+                    .edge_weight(src_id.into(), dst_id.into())
                     .unwrap_or(0.0);
 
             contexted_graph
-                .remove_edge(subject_id.into(), object_id.into());
+                .remove_edge(src_id.into(), dst_id.into());
 
             let null_graph  = graph.borrow_graph_mut();
-            let null_weight = null_graph.edge_weight(subject_id.into(), object_id.into()).unwrap_or(0.0);
+            let null_weight = null_graph.edge_weight(src_id.into(), dst_id.into()).unwrap_or(0.0);
             let new_weight  = null_weight - old_weight;
 
-            let _ = null_graph.upsert_edge(subject_id.into(), object_id.into(), new_weight)?;
+            let _ = null_graph.upsert_edge(src_id.into(), dst_id.into(), new_weight)?;
 
             //  TODO
             //  Count all countexts.
         } else {
             graph
                 .borrow_graph_mut()
-                .remove_edge(subject_id.into(), object_id.into());
+                .remove_edge(src_id.into(), dst_id.into());
         }
 
         // TODO: use node garbage collection
+
+        Ok(())
+    }
+
+    fn mr_delete_edge(
+        &self,
+        src : &str,
+        dst : &str,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
+        let mut graph = GRAPH.lock()?;
+
+        let src_id = self.get_node_id(&mut graph, src);
+        let dst_id = self.get_node_id(&mut graph, dst);
+
+        self.delete_edge_locked(&mut graph, src_id, dst_id)?;
 
         Ok(EMPTY_RESULT.to_vec())
     }
 
     fn mr_delete_node(
         &self,
-        ego: &str,
+        ego : &str,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
-        let mut graph = GRAPH.lock()?;
-        let ego_id = self.get_node_id(&mut graph, ego);
+        let mut graph  = GRAPH.lock()?;
+        let     ego_id = self.get_node_id(&mut graph, ego);
 
-        let my_graph: &mut MyGraph = graph.borrow_graph_mut();
-        my_graph
-            .neighbors(ego_id)
-            .iter()
-            .for_each(|&n| my_graph.remove_edge(ego_id.into(), n));
+        let my_graph = graph.borrow_graph_mut();
 
-        if let Some(context) = &self.context {
-            let my_graph: &mut MyGraph = graph.borrow_graph_mut1(context);
-            my_graph
-                .neighbors(ego_id)
-                .iter()
-                .for_each(|&n| my_graph.remove_edge(ego_id.into(), n));
+        for n in my_graph.neighbors(ego_id).iter() {
+            self.delete_edge_locked(&mut graph, ego_id, *n)?;
         }
 
         Ok(EMPTY_RESULT.to_vec())
