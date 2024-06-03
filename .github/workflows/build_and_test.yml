@@ -26,4 +26,9 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build docker image
       run: |
-        sudo docker build .
+        sudo docker build -t meritrank_service:latest .
+    - name: Upload docker image
+      uses: ishworkh/container-imiage-artifact-upload@v1.1.1
+      with:
+        image: meritrank_service:latest
+        retention_days: 2
