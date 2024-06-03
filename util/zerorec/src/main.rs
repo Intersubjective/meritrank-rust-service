@@ -1,7 +1,6 @@
 use std::env::var;
 use lazy_static::lazy_static;
 use nng::{Message, Protocol, Socket};
-use serde::Deserialize;
 
 lazy_static! {
     static ref SERVICE_URL: String =
@@ -9,9 +8,7 @@ lazy_static! {
             .unwrap_or("tcp://127.0.0.1:10234".to_string());
 }
 
-fn request<T: for<'a> Deserialize<'a>>(
-    req: &Vec<u8>,
-) -> Result<String, Box<dyn std::error::Error + 'static>> {
+fn request(req: &Vec<u8>) -> Result<String, Box<dyn std::error::Error + 'static>> {
     let client = Socket::new(Protocol::Req0)?;
     client.dial(&SERVICE_URL)?;
     client
