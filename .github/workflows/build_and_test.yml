@@ -27,8 +27,10 @@ jobs:
     - name: Build docker image
       run: |
         sudo docker build -t meritrank_service:latest .
+        sudo docker image save meritrank_service:latest -o meritrank_service_latest.tar
     - name: Upload docker image
-      uses: ishworkh/container-image-artifact-upload@v1.1.1
+      uses: actions/upload-artifact@v4
       with:
-        image: meritrank_service:latest
-        retention_days: 2
+        name: meritrank_service_latest.tar
+        path: meritrank_service_latest.tar
+        retention-days: 2
