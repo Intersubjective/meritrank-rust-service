@@ -26,11 +26,11 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build docker image
       run: |
-        docker build -t meritrank_service:latest .
-        docker image save meritrank_service:latest -o meritrank_service_latest.tar
+        docker build -t meritrank-service:dev .
+        docker image save meritrank-service:dev -o meritrank_service_dev.tar
     - name: Upload docker image
       uses: actions/upload-artifact@v4
       with:
-        name: meritrank_service_latest.tar
-        path: meritrank_service_latest.tar
+        name: meritrank_service_dev.tar
+        path: meritrank_service_dev.tar
         retention-days: 2
