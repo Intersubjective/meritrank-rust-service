@@ -1,14 +1,13 @@
 [package]
 name = "meritrank-service"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 
 [features]
 shared = []
 
 [dependencies]
-mrgraph    = { git = "https://github.com/Intersubjective/mrgraph.git",    branch = "dev" }
-meritrank2 = { git = "https://github.com/Intersubjective/meritrank2.git", branch = "dev" }
+meritrank2 = { git = "https://github.com/Intersubjective/meritrank-rust.git", branch = "dev" }
 
 rand = "=0.8.4"
 petgraph = "0.6.3"

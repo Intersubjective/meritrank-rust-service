@@ -3,6 +3,9 @@
 //  break invariance.
 //
 
+mod errors;
+mod mrgraph;
+
 use std::thread;
 use std::time::Duration;
 use std::env::var;
@@ -13,9 +16,9 @@ use std::sync::MutexGuard;
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use nng::{Aio, AioResult, Context, Message, Protocol, Socket};
 use simple_pagerank::Pagerank;
-use mrgraph::error::GraphManipulationError;
-use mrgraph::mrgraph::{GraphSingleton, GRAPH};
-use mrgraph::mrgraph::NodeId;
+use errors::GraphManipulationError;
+use mrgraph::{GraphSingleton, GRAPH};
+use mrgraph::NodeId;
 use meritrank::{MeritRank, MyGraph, MeritRankError, Weight};
 use ctrlc;
 
@@ -722,7 +725,7 @@ impl GraphContext {
                         copy.add_node(node);
                         Ok(())
                     } else {
-                        Err(mrgraph::error::GraphManipulationError::DataExtractionFailure(
+                        Err(errors::GraphManipulationError::DataExtractionFailure(
                             "Should never be here (v3)".to_string()
                         ))
                     }
