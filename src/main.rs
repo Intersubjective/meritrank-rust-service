@@ -64,7 +64,10 @@ lazy_static::lazy_static! {
 const VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
 
 fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
-    ctrlc::set_handler(move || std::process::exit(0))?;
+    ctrlc::set_handler(move || {
+        println!("");
+        std::process::exit(0)
+    })?;
 
     if *THREADS > 1 {
         main_async(*THREADS)
