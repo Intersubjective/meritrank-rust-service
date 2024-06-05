@@ -9,6 +9,7 @@ https://github.com/vsradkevich/pg_meritrank/tree/main/src/lib_graph
 
 ## Env variables
 - `MERITRANK_SERVICE_URL` - default `"tcp://127.0.0.1:10234"`
+- `MERITRANK_SERVICE_THREADS` - default `1`
 - `MERITRANK_NUM_WALK` - default `10000`
 - `MERITRANK_WEIGHT_MIN_LEVEL` - default `0.1`
 - `MERITRANK_ZERO_NODE` - default `U000000000000`

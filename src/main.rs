@@ -17,6 +17,7 @@ use mrgraph::error::GraphManipulationError;
 use mrgraph::mrgraph::{GraphSingleton, GRAPH};
 use mrgraph::mrgraph::NodeId;
 use meritrank::{MeritRank, MyGraph, MeritRankError, Weight};
+use ctrlc;
 
 #[cfg(test)]
 mod tests;
@@ -25,6 +26,12 @@ lazy_static::lazy_static! {
     static ref SERVICE_URL: String =
         var("MERITRANK_SERVICE_URL")
             .unwrap_or("tcp://127.0.0.1:10234".to_string());
+
+    static ref THREADS : usize =
+        var("MERITRANK_SERVICE_THREADS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(1);
 
     static ref NUM_WALK: usize =
         var("MERITRANK_NUM_WALK")
@@ -56,16 +63,13 @@ lazy_static::lazy_static! {
 
 const VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
 
-// const PARALLEL: usize = 128;
 fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
-    match var("RUST_SERVICE_PARALLEL") {
-        Ok(s) => {
-            let parallel =
-                s.parse()
-                    .expect("Error: RUST_SERVICE_PARALLEL env. isn't a number!");
-            main_async(parallel)
-        }
-        _ => main_sync()
+    ctrlc::set_handler(move || std::process::exit(0))?;
+
+    if *THREADS > 1 {
+        main_async(*THREADS)
+    } else {
+        main_sync()
     }
 }
 
@@ -84,14 +88,14 @@ fn main_sync() -> Result<(), Box<dyn std::error::Error + 'static>> {
     // Ok(())
 }
 
-fn main_async(parallel: usize) -> Result<(), Box<dyn std::error::Error + 'static>> {
-    println!("Starting server {} at {}. PARALLEL={parallel}", VERSION.unwrap_or("unknown"), *SERVICE_URL);
+fn main_async(threads : usize) -> Result<(), Box<dyn std::error::Error + 'static>> {
+    println!("Starting server {} at {}, {} threads", VERSION.unwrap_or("unknown"), *SERVICE_URL, threads);
     println!("NUM_WALK={}", *NUM_WALK);
 
     let s = Socket::new(Protocol::Rep0)?;
 
     // Create all of the worker contexts
-    let workers: Vec<_> = (0..parallel)
+    let workers: Vec<_> = (0..threads)
         .map(|_| {
             let ctx = Context::new(&s)?;
             let ctx_clone = ctx.clone();

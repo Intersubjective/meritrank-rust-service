@@ -4,9 +4,14 @@ WORKDIR /usr/project
 COPY . .
 RUN cargo build --release
 
-FROM scratch as release
+FROM scratch
 EXPOSE 10234
-ENV RUST_SERVICE_PARALLEL=128
+ENV MERITRANK_SERVICE_URL=tcp://127.0.0.1:10234
+ENV MERITRANK_SERVICE_THREADS=128
+ENV MERITRANK_NUM_WALK=10000
+ENV MERITRANK_WEIGHT_MIN_LEVEL=0.1
+ENV MERITRANK_ZERO_NODE=U000000000000
+ENV MERITRANK_TOP_NODES_LIMIT=100
 WORKDIR /srv
-COPY --from=compile /usr/project/target/release/meritrank-service meritrank-service
 ENTRYPOINT [ "/srv/meritrank-service" ]
+COPY --from=compile /usr/project/target/release/meritrank-service meritrank-service
