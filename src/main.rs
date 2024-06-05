@@ -23,42 +23,35 @@ mod tests;
 
 lazy_static::lazy_static! {
     static ref SERVICE_URL: String =
-        var("RUST_SERVICE_URL")
+        var("MERITRANK_SERVICE_URL")
             .unwrap_or("tcp://127.0.0.1:10234".to_string());
 
     static ref NUM_WALK: usize =
-        var("NUM_WALK")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(10000);
-
-    static ref GRAVITY_NUM_WALK: usize =
-        var("GRAVITY_NUM_WALK")
+        var("MERITRANK_NUM_WALK")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(10000);
 
     static ref WEIGHT_MIN_LEVEL: Weight =
-        var("WEIGHT_MIN_LEVEL")
+        var("MERITRANK_WEIGHT_MIN_LEVEL")
             .ok()
-            .and_then(|s| s.parse::<Weight>().ok()) // the trait `FromStr` is not implemented for `Weight`
-            //.and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.1); // was: 1.0
+            .and_then(|s| s.parse::<Weight>().ok())
+            .unwrap_or(0.1);
+
+    static ref ZERO_NODE: String =
+        var("MERITRANK_ZERO_NODE")
+            .unwrap_or("U000000000000".to_string());
+
+    static ref TOP_NODES_LIMIT: usize =
+        var("MERITRANK_TOP_NODES_LIMIT")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(100);
 
     static ref EMPTY_RESULT: Vec<u8> = {
         const EMPTY_ROWS_VEC: Vec<(&str, &str, f64)> = Vec::new();
         rmp_serde::to_vec(&EMPTY_ROWS_VEC).unwrap()
     };
-
-    static ref ZERO_NODE: String =
-        var("ZERO_NODE")
-            .unwrap_or("U000000000000".to_string());
-
-    static ref TOP_NODES_LIMIT: usize =
-        var("TOP_NODES_LIMIT")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(100);
 }
 
 const VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
@@ -78,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
 
 fn main_sync() -> Result<(), Box<dyn std::error::Error + 'static>> {
     println!("Starting server {} at {}", VERSION.unwrap_or("unknown"), *SERVICE_URL);
-    println!("NUM_WALK={}, GRAVITY_NUM_WALK={}", *NUM_WALK, *GRAVITY_NUM_WALK);
+    println!("NUM_WALK={}", *NUM_WALK);
 
     let s = Socket::new(Protocol::Rep0)?;
     s.listen(&SERVICE_URL)?;
@@ -93,7 +86,7 @@ fn main_sync() -> Result<(), Box<dyn std::error::Error + 'static>> {
 
 fn main_async(parallel: usize) -> Result<(), Box<dyn std::error::Error + 'static>> {
     println!("Starting server {} at {}. PARALLEL={parallel}", VERSION.unwrap_or("unknown"), *SERVICE_URL);
-    println!("NUM_WALK={}, GRAVITY_NUM_WALK={}", *NUM_WALK, *GRAVITY_NUM_WALK);
+    println!("NUM_WALK={}", *NUM_WALK);
 
     let s = Socket::new(Protocol::Rep0)?;
 
@@ -555,7 +548,7 @@ impl GraphContext {
                             let score = match rank.get_node_score(a_id, b_id) {
                                 Ok(x) => x,
                                 Err(MeritRankError::NodeDoesNotCalculated) => {
-                                    rank.calculate(a_id, *GRAVITY_NUM_WALK)?;
+                                    rank.calculate(a_id, *NUM_WALK)?;
                                     rank.get_node_score(a_id, b_id)?
                                 },
                                 Err(x) => {
@@ -754,7 +747,7 @@ impl GraphContext {
                             let name = graph.node_id_to_name_unsafe(*node_id)?;
 
                             if !rank.get_personal_hits().contains_key(&ego_id) {
-                                let _ = rank.calculate(ego_id, *GRAVITY_NUM_WALK)?;
+                                let _ = rank.calculate(ego_id, *NUM_WALK)?;
                             }
                             let score =
                                 rank.get_node_score(ego_id, *node_id)?;

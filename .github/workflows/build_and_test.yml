@@ -17,8 +17,7 @@ jobs:
     - name: Run tests
       run: |
         export RUST_TEST_THREADS=1
-        export NUM_WALK=50
-        export GRAVITY_NUM_WALK=50
+        export MERITRANK_NUM_WALK=50
         cargo test
   docker_build:
     needs: [ build_and_test ]
