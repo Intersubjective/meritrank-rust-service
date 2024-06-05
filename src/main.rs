@@ -42,12 +42,6 @@ lazy_static::lazy_static! {
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(10000);
 
-    static ref WEIGHT_MIN_LEVEL: Weight =
-        var("MERITRANK_WEIGHT_MIN_LEVEL")
-            .ok()
-            .and_then(|s| s.parse::<Weight>().ok())
-            .unwrap_or(0.1);
-
     static ref ZERO_NODE: String =
         var("MERITRANK_ZERO_NODE")
             .unwrap_or("U000000000000".to_string());
@@ -904,8 +898,8 @@ impl GraphContext {
         let result : Vec<(String, String, f64)> =
             edges
                 .iter()
-                .filter(|(ego_id, dest_id, weight)|
-                            *weight > *WEIGHT_MIN_LEVEL && ego_id != dest_id
+                .filter(|(ego_id, dest_id, _)|
+                            ego_id != dest_id
                         // Todo: filter if ego or dest is Zero here (?)
                 )
                 .flat_map(|(ego_id, dest_id, weight)| {
