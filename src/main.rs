@@ -163,7 +163,7 @@ fn mr_node_score_null(ego: &str, target: &str) -> Result<Vec<u8>, Box<dyn std::e
         GraphSingleton::contexts()?
             .iter()
             .filter_map(|context| {
-                let mut rank = GraphSingleton::get_rank1(&context).ok()?;
+                let mut rank = GraphSingleton::get_rank_contexted(&context).ok()?;
                 let ego_id: NodeId = GraphSingleton::node_name_to_id(ego).ok()?; // thread safety?
                 let target_id: NodeId = GraphSingleton::node_name_to_id(target).ok()?; // thread safety?
                 /*
@@ -199,7 +199,7 @@ fn mr_scores_null(ego: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + 'sta
         GraphSingleton::contexts()? // .push(null)
             .iter()
             .filter_map(|context| {
-                let mut rank = GraphSingleton::get_rank1(&context).ok()?;
+                let mut rank = GraphSingleton::get_rank_contexted(&context).ok()?;
                 let ego_id: NodeId = GraphSingleton::node_name_to_id(ego).ok()?; // thread safety?
 
                 /*
@@ -244,23 +244,23 @@ fn mr_scores_null(ego: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + 'sta
 
 
 pub struct GraphContext {
-    context: Option<String>,
+    context : String,
 }
 
 impl GraphContext {
     pub fn null() -> GraphContext {
         GraphContext {
-            context: None
+            context : String::new(),
         }
     }
     pub fn new(context_init: &str) -> GraphContext {
         if context_init.is_empty() {
             GraphContext {
-                context: None
+                context : String::new(),
             }
         } else {
             GraphContext {
-                context: Some(context_init.to_string())
+                context: context_init.to_string(),
             }
         }
     }
@@ -299,7 +299,7 @@ impl GraphContext {
         } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("hide_personal", hide_personal), ("score", ">=", score_gte), ("score", "<=", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
             self.mr_scores(ego, target_like, hide_personal, score_gte, true, score_lt, true, limit)
         } else if let Ok((((subject, object, amount), ), ())) = rmp_serde::from_slice(slice) {
-            self.mr_edge(subject, object, amount)
+            self.mr_put_edge(subject, object, amount)
         } else if let Ok(((("src", "delete", ego), ("dest", "delete", target)), ())) = rmp_serde::from_slice(slice) {
             self.mr_delete_edge(ego, target)
         } else if let Ok(((("src", "delete", ego), ), ())) = rmp_serde::from_slice(slice) {
@@ -310,12 +310,12 @@ impl GraphContext {
             self.mr_gravity_nodes(ego, focus, positive_only /* false */, limit /* 3 */)
         } else if let Ok((((ego, "connected"), ), ())) = rmp_serde::from_slice(slice) {
             self.mr_connected(ego)
-        } else if let Ok(("for_beacons_global", ())) = rmp_serde::from_slice(slice) {
-            self.mr_beacons_global()
         } else if let Ok(("nodes", ())) = rmp_serde::from_slice(slice) {
             self.mr_nodes()
         } else if let Ok(("edges", ())) = rmp_serde::from_slice(slice) {
-            self.mr_edges()
+            self.mr_put_edges()
+        } else if let Ok(("reset", ())) = rmp_serde::from_slice(slice) {
+            self.mr_reset()
         } else if let Ok(("zerorec", ())) = rmp_serde::from_slice(slice) {
             self.mr_zerorec()
         } else {
@@ -325,11 +325,10 @@ impl GraphContext {
     }
 
     fn get_rank(&self) -> Result<MeritRank, GraphManipulationError> {
-        match &self.context {
-            // TODO: it's thread safe as get_rank/get_rank1 do safe copy all the graph now
-            None => GraphSingleton::get_rank(),
-            Some(ctx) if ctx.is_empty() => GraphSingleton::get_rank(),
-            Some(ctx) => GraphSingleton::get_rank1(&ctx),
+        if self.context.is_empty() {
+            GraphSingleton::get_rank()
+        } else {
+            GraphSingleton::get_rank_contexted(self.context.as_str())
         }
     }
 
@@ -338,10 +337,10 @@ impl GraphContext {
         graph : &mut MutexGuard<GraphSingleton>,
         name  : &str
     ) -> NodeId {
-        match &self.context {
-            None => graph.get_node_id(name),
-            Some(ctx) if ctx.is_empty() =>  graph.get_node_id(name),
-            Some(ctx) => graph.get_node_id1(ctx.as_str(), name)
+        if self.context.is_empty() {
+            graph.add_node_id(name)
+        } else {
+            graph.add_node_id_contexted(self.context.as_str(), name)
         }
     }
 
@@ -402,7 +401,7 @@ impl GraphContext {
         Ok(v)
     }
 
-    fn mr_edge(
+    fn mr_put_edge(
         &self,
         subject: &str,
         object: &str,
@@ -417,8 +416,13 @@ impl GraphContext {
         let subject_id = self.get_node_id(&mut graph, subject);
         let object_id = self.get_node_id(&mut graph, object);
 
-        if let Some(context) = &self.context {
-            let contexted_graph = graph.borrow_graph_mut1(context);
+        if self.context.is_empty() {
+            graph.graph.upsert_edge(subject_id.into(), object_id.into(), amount)?;
+        } else {
+            if !graph.graphs.contains_key(self.context.as_str()) {
+                graph.graphs.insert(self.context.clone(), MyGraph::new());
+            }
+            let contexted_graph = graph.graphs.get_mut(self.context.as_str()).unwrap();
             let old_weight =
                 contexted_graph
                     .edge_weight(subject_id.into(), object_id.into())
@@ -427,19 +431,15 @@ impl GraphContext {
             contexted_graph
                 .upsert_edge_with_nodes(subject_id.into(), object_id.into(), amount)?;
 
-            let null_graph = graph.borrow_graph_mut();
+            let null_graph = &mut graph.graph;
+
             match null_graph.edge_weight(subject_id.into(), object_id.into()) {
                 Some(null_weight) =>
-                    //*null_weight = *null_weight + amount - old_weight; // todo: check
                     null_graph.upsert_edge(subject_id.into(), object_id.into(), null_weight + amount - old_weight)?,
                 _ => {
                     let _ = null_graph.upsert_edge(subject_id.into(), object_id.into(), amount)?;
                 }
             }
-        } else {
-            graph
-                .borrow_graph_mut()
-                .upsert_edge(subject_id.into(), object_id.into(), amount)?;
         }
 
         Ok(v)
@@ -451,8 +451,15 @@ impl GraphContext {
         src_id : NodeId,
         dst_id : NodeId
     ) -> Result<(), Box<dyn std::error::Error + 'static>> {
-        if let Some(context) = &self.context {
-            let contexted_graph = graph.borrow_graph_mut1(context);
+        if self.context.is_empty() {
+            graph
+                .graph
+                .remove_edge(src_id.into(), dst_id.into());
+        } else {
+            if !graph.graphs.contains_key(self.context.as_str()) {
+                graph.graphs.insert(self.context.clone(), MyGraph::new());
+            }
+            let contexted_graph = graph.graphs.get_mut(self.context.as_str()).unwrap();
             let old_weight =
                 contexted_graph
                     .edge_weight(src_id.into(), dst_id.into())
@@ -461,7 +468,7 @@ impl GraphContext {
             contexted_graph
                 .remove_edge(src_id.into(), dst_id.into());
 
-            let null_graph  = graph.borrow_graph_mut();
+            let null_graph  = &mut graph.graph;
             let null_weight = null_graph.edge_weight(src_id.into(), dst_id.into()).unwrap_or(0.0);
             let new_weight  = null_weight - old_weight;
 
@@ -469,13 +476,7 @@ impl GraphContext {
 
             //  TODO
             //  Count all countexts.
-        } else {
-            graph
-                .borrow_graph_mut()
-                .remove_edge(src_id.into(), dst_id.into());
         }
-
-        // TODO: use node garbage collection
 
         Ok(())
     }
@@ -502,9 +503,7 @@ impl GraphContext {
         let mut graph  = GRAPH.lock()?;
         let     ego_id = self.get_node_id(&mut graph, ego);
 
-        let my_graph = graph.borrow_graph_mut();
-
-        for n in my_graph.neighbors(ego_id).iter() {
+        for n in graph.graph.neighbors(ego_id).iter() {
             self.delete_edge_locked(&mut graph, ego_id, *n)?;
         }
 
@@ -534,10 +533,10 @@ impl GraphContext {
                 let mut copy = MyGraph::new();
 
                 let source_graph =
-                    if let Some(context) = &self.context {
-                        graph.borrow_graph0(context)? // todo // ??
+                    if self.context.is_empty() {
+                        &graph.graph
                     } else {
-                        graph.borrow_graph()
+                        graph.graphs.get(self.context.as_str()).unwrap()
                     };
 
                 let focus_vector: Vec<(NodeId, NodeId, Weight)> =
@@ -800,7 +799,7 @@ impl GraphContext {
     }
 
     fn get_connected(&self, ego : &str) -> Result<Vec<(String, String)>, Box<dyn std::error::Error + 'static>> {
-        let mut graph = GRAPH.lock()?;
+        let graph = GRAPH.lock()?;
 
         let node_id = graph.node_name_to_id_unsafe(ego);
 
@@ -809,10 +808,11 @@ impl GraphContext {
             _      => {}
         };
 
-        let my_graph : &MyGraph =
-            match &self.context {
-                None      => graph.borrow_graph(),
-                Some(ctx) => graph.borrow_graph1(ctx)
+        let my_graph =
+            if self.context.is_empty() {
+                &graph.graph
+            } else {
+                graph.graphs.get(self.context.as_str()).unwrap()
             };
 
         let result: Vec<(String, String)> =
@@ -846,7 +846,7 @@ impl GraphContext {
         let     graph = GRAPH.lock()?;
 
         let node_names : HashMap<String, NodeId> =
-            graph.borrow_node_names().clone();
+            graph.node_names.clone();
 
         let node_ids : HashMap<NodeId, String> =
             node_names
@@ -921,16 +921,13 @@ impl GraphContext {
         return Ok(result);
     }
 
-    fn mr_beacons_global(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
-        Ok(rmp_serde::to_vec(&self.get_reduced_graph()?)?)
-    }
-
     fn mr_nodes(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
-        let mut graph = GRAPH.lock()?;
-        let my_graph = // self.borrow_graph(graph);
-            match &self.context {
-                None => graph.borrow_graph(),
-                Some(ctx) => graph.borrow_graph1(ctx)
+        let graph = GRAPH.lock()?;
+        let my_graph =
+            if self.context.is_empty() {
+                &graph.graph
+            } else {
+                graph.graphs.get(self.context.as_str()).unwrap()
             };
 
         let (nodes, _) = my_graph.all(); // not optimal
@@ -948,12 +945,13 @@ impl GraphContext {
         Ok(v)
     }
 
-    fn mr_edges(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
-        let mut graph    = GRAPH.lock()?;
-        let     my_graph =
-            match &self.context {
-                None      => graph.borrow_graph(),
-                Some(ctx) => graph.borrow_graph1(ctx)
+    fn mr_put_edges(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
+        let graph = GRAPH.lock()?;
+        let my_graph =
+            if self.context.is_empty() {
+                &graph.graph
+            } else {
+                graph.graphs.get(self.context.as_str()).unwrap()
             };
 
         let (_, edges) = my_graph.all(); // not optimal
@@ -1025,6 +1023,18 @@ impl GraphContext {
         return Ok(res);
     }
 
+    fn mr_reset(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
+        let mut graph = GRAPH.lock()?;
+
+        if !self.context.is_empty() {
+            return Err("Can only reset for all contexts".into());
+        }
+
+        graph.reset();
+
+        return Ok(rmp_serde::to_vec(&"Ok".to_string())?);
+    }
+
     fn mr_zerorec(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + 'static>> {
         //  NOTE
         //  This func is not thread-safe.
@@ -1034,7 +1044,7 @@ impl GraphContext {
         let nodes = self.top_nodes()?;
 
         for (name, amount) in nodes.iter() {
-            let _ = self.mr_edge(ZERO_NODE.as_str(), name.as_str(), *amount)?;
+            let _ = self.mr_put_edge(ZERO_NODE.as_str(), name.as_str(), *amount)?;
         }
 
         return Ok(rmp_serde::to_vec(&"Ok".to_string())?);
