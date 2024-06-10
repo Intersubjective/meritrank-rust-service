@@ -32,12 +32,26 @@ lazy_static::lazy_static! {
   pub static ref GRAPH: Arc<Mutex<GraphSingleton>> = Arc::new(Mutex::new(GraphSingleton::new()));
 }
 
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum NodeType {
+  NodeUnknown,
+  NodeUser,
+  NodeBeacon,
+  NodeComment,
+}
+
+#[derive(Clone, Copy)]
+pub struct NodeInfo {
+  pub id   : NodeId,
+  pub kind : NodeType,
+}
+
 pub struct NodesInfo {
   //  FIXME(Performance)
   //  Use parallel array of node names for O(0) lookup.
   //  Add node type attributes.
 
-  node_names : HashMap<String, NodeId>,
+  node_names : HashMap<String, NodeInfo>,
   node_count : u64,
 }
 
@@ -50,12 +64,12 @@ impl NodesInfo {
   }
 
   pub fn node_name_to_id_locked(&self, node_name: &str) -> Result<NodeId, Box<dyn Error + 'static>> {
-    Ok(*self.node_names.get(node_name).unwrap())
+    Ok(self.node_names.get(node_name).unwrap().id)
   }
 
   pub fn node_id_to_name_locked(&self, node_id: NodeId) -> Result<String, Box<dyn Error + 'static>> {
-    for (name, &id) in self.node_names.iter() {
-      if id == node_id {
+    for (name, n) in self.node_names.iter() {
+      if n.id == node_id {
         return Ok(name.to_string());
       }
     }
@@ -94,20 +108,28 @@ impl GraphSingleton {
   }
 
   pub fn add_node_id(&mut self, node_name : &str) -> NodeId {
-    if let Some(&node_id) = self.info.node_names.get(node_name) {
-      node_id
+    if let Some(&n) = self.info.node_names.get(node_name) {
+      n.id
     } else {
       let node_id = self.info.node_count;
       self.info.node_count += 1;
-      self.info.node_names.insert(node_name.to_string(), node_id);
+      self.info.node_names.insert(node_name.to_string(), NodeInfo {
+        id   : node_id,
+        kind : match node_name.chars().nth(0).unwrap() {
+          'U' => NodeType::NodeUser,
+          'B' => NodeType::NodeBeacon,
+          'C' => NodeType::NodeComment,
+          _   => NodeType::NodeUnknown,
+        },
+      });
       self.graph.add_node(node_id.into());
       node_id
     }
   }
 
   pub fn add_node_id_contexted(&mut self, context: &str, node_name: &str) -> NodeId {
-    if let Some(&node_id) = self.info.node_names.get(node_name) {
-      node_id
+    if let Some(&n) = self.info.node_names.get(node_name) {
+      n.id
     } else {
       let node_id = self.add_node_id(node_name); // create a node in null-context
       if !self.graphs.contains_key(context) {
@@ -564,7 +586,7 @@ impl GraphContext {
     ego : &str,
   ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
     let mut graph = GRAPH.lock()?;
-    let     id    = *graph.info.node_names.get(ego).unwrap();
+    let     id    = graph.info.node_names.get(ego).unwrap().id;
 
     //  FIXME
     //  Add a function to get all neighbors in MeritRank.
@@ -861,32 +883,32 @@ impl GraphContext {
     let node_ids : HashMap<NodeId, String> =
       info.node_names.clone()
         .into_iter()
-        .map(|(name, id)| (id, name))
+        .map(|(name, info)| (info.id, name))
         .collect();
 
-    let users : Vec<(String, NodeId)> =
+    let users : Vec<(String, NodeInfo)> =
       info.node_names.clone()
         .into_iter()
-        .filter(|(name, _)| name.starts_with("U")) // filter zero user?
+        .filter(|(_, info)| info.kind == NodeType::NodeUser) // filter zero user?
+        .map(|(name, info)| (name, info))
         .collect();
 
     if users.is_empty() {
       return Ok(Vec::new());
     }
 
-    for (_, node_id) in users.iter() {
-      rank.calculate(*node_id, *NUM_WALK)?;
+    for (_, info) in users.iter() {
+      rank.calculate(info.id, *NUM_WALK)?;
     }
 
     let edges : Vec<(NodeId, NodeId, Weight)> =
       users.into_iter()
-        .map(|(_name, ego_id)| {
+        .map(|(_name, ego_info)| {
           let result: Vec<(NodeId, NodeId, Weight)> =
-            rank.get_ranks(ego_id, None)?
+            rank.get_ranks(ego_info.id, None)?
             .into_iter()
-            .map(|(node_id, score)| (ego_id, node_id, score))
+            .map(|(node_id, score)| (ego_info.id, node_id, score))
             .filter(|(ego_id, node_id, score)|
-              // info.node_id_to_name_locked(*node_id)
               node_ids.get(node_id)
                 .map(|node| (node.starts_with("U") || node.starts_with("B")) &&
                   *score > 0.0 &&
@@ -943,13 +965,13 @@ impl GraphContext {
     let result : Vec<String> =
       info.node_names
         .iter()
-        .map(|(name, id)| (name.clone(), *id))
-        .filter(|(_, id)|
-          match rank.neighbors_weighted(*id, true) {
+        .map(|(name, info)| (name.clone(), *info))
+        .filter(|(_, info)|
+          match rank.neighbors_weighted(info.id, true) {
             Some(x) => x.len() > 0,
             None    => false,
           } ||
-          match rank.neighbors_weighted(*id, false) {
+          match rank.neighbors_weighted(info.id, false) {
             Some(x) => x.len() > 0,
             None    => false,
           }
@@ -973,10 +995,10 @@ impl GraphContext {
 
     let mut v : Vec<(String, String, Weight)> = vec![];
     for (_, src) in info.node_names.iter() {
-      let src_name = info.node_id_to_name_locked(*src)?;
+      let src_name = info.node_id_to_name_locked(src.id)?;
       for (dst, weight) in
-        rank.neighbors_weighted(*src, true).unwrap_or(HashMap::new()).iter()
-          .chain(rank.neighbors_weighted(*src, false).unwrap_or(HashMap::new()).iter()) {
+        rank.neighbors_weighted(src.id, true).unwrap_or(HashMap::new()).iter()
+          .chain(rank.neighbors_weighted(src.id, false).unwrap_or(HashMap::new()).iter()) {
         let dst_name = info.node_id_to_name_locked(*dst)?;
         v.push((src_name.clone(), dst_name, *weight));
       }
