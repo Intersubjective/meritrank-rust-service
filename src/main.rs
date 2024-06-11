@@ -9,7 +9,7 @@ mod tests;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use itertools::Itertools;
-use meritrank::{MeritRank, MyGraph};
+use meritrank::{MeritRank, Graph};
 use std::thread;
 use std::time::Duration;
 use std::env::var;
@@ -19,7 +19,7 @@ use std::error::Error;
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use nng::{Aio, AioResult, Context, Message, Protocol, Socket};
 use simple_pagerank::Pagerank;
-use meritrank::{MeritRankError, Weight, NodeId};
+use meritrank::{MeritRankError, Weight, NodeId, Neighbors};
 use ctrlc;
 
 //  ================================================
@@ -32,18 +32,13 @@ lazy_static::lazy_static! {
   pub static ref GRAPH: Arc<Mutex<GraphSingleton>> = Arc::new(Mutex::new(GraphSingleton::new()));
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
-pub enum NodeType {
-  NodeUnknown,
-  NodeUser,
-  NodeBeacon,
-  NodeComment,
-}
-
-#[derive(Clone, Copy)]
-pub struct NodeInfo {
-  pub id   : NodeId,
-  pub kind : NodeType,
+#[derive(PartialEq, Eq, Clone, Copy, Default)]
+pub enum NodeKind {
+  #[default]
+  Unknown,
+  User,
+  Beacon,
+  Comment,
 }
 
 pub struct NodesInfo {
@@ -51,7 +46,7 @@ pub struct NodesInfo {
   //  Use parallel array of node names for O(0) lookup.
   //  Add node type attributes.
 
-  node_names : HashMap<String, NodeInfo>,
+  node_names : HashMap<String, NodeId>,
   node_count : u64,
 }
 
@@ -64,12 +59,12 @@ impl NodesInfo {
   }
 
   pub fn node_name_to_id_locked(&self, node_name: &str) -> Result<NodeId, Box<dyn Error + 'static>> {
-    Ok(self.node_names.get(node_name).unwrap().id)
+    Ok(*self.node_names.get(node_name).unwrap())
   }
 
   pub fn node_id_to_name_locked(&self, node_id: NodeId) -> Result<String, Box<dyn Error + 'static>> {
-    for (name, n) in self.node_names.iter() {
-      if n.id == node_id {
+    for (name, id) in self.node_names.iter() {
+      if *id == node_id {
         return Ok(name.to_string());
       }
     }
@@ -78,23 +73,32 @@ impl NodesInfo {
 }
 
 pub struct GraphSingleton {
-  pub graph  : MeritRank,                  // null-context
-  pub graphs : HashMap<String, MeritRank>, // contexted
+  pub graph  : MeritRank<NodeKind>,                  // null-context
+  pub graphs : HashMap<String, MeritRank<NodeKind>>, // contexted
   pub info   : NodesInfo,
+}
+
+fn kind_from_name(name : &str) -> NodeKind {
+  match name.chars().nth(0) {
+    Some('U') => NodeKind::User,
+    Some('B') => NodeKind::Beacon,
+    Some('C') => NodeKind::Comment,
+    _         => NodeKind::Unknown,
+  }
 }
 
 impl GraphSingleton {
   /// Constructor
   pub fn new() -> GraphSingleton {
     GraphSingleton {
-      graph  : MeritRank::new(MyGraph::new()).unwrap(),
+      graph  : MeritRank::new(Graph::<NodeKind>::new()).unwrap(),
       graphs : HashMap::new(),
       info   : NodesInfo::new(),
     }
   }
 
   pub fn reset(&mut self) {
-    self.graph  = MeritRank::new(MyGraph::new()).unwrap();
+    self.graph  = MeritRank::new(Graph::new()).unwrap();
     self.graphs = HashMap::new();
     self.info   = NodesInfo::new();
   }
@@ -109,34 +113,26 @@ impl GraphSingleton {
 
   pub fn add_node_id(&mut self, node_name : &str) -> NodeId {
     if let Some(&n) = self.info.node_names.get(node_name) {
-      n.id
+      n
     } else {
       let node_id = self.info.node_count;
       self.info.node_count += 1;
-      self.info.node_names.insert(node_name.to_string(), NodeInfo {
-        id   : node_id,
-        kind : match node_name.chars().nth(0).unwrap() {
-          'U' => NodeType::NodeUser,
-          'B' => NodeType::NodeBeacon,
-          'C' => NodeType::NodeComment,
-          _   => NodeType::NodeUnknown,
-        },
-      });
-      self.graph.add_node(node_id.into());
+      self.info.node_names.insert(node_name.to_string(), node_id);
+      self.graph.add_node(node_id.into(), kind_from_name(&node_name));
       node_id
     }
   }
 
-  pub fn add_node_id_contexted(&mut self, context: &str, node_name: &str) -> NodeId {
+  pub fn add_node_id_contexted(&mut self, context : &str, node_name : &str) -> NodeId {
     if let Some(&n) = self.info.node_names.get(node_name) {
-      n.id
+      n
     } else {
       let node_id = self.add_node_id(node_name); // create a node in null-context
       if !self.graphs.contains_key(context) {
-        self.graphs.insert(context.to_string(), MeritRank::new(MyGraph::new()).unwrap());
+        self.graphs.insert(context.to_string(), MeritRank::new(Graph::new()).unwrap());
       }
       let graph = self.graphs.get_mut(context).unwrap();
-      graph.add_node(node_id.into());
+      graph.add_node(node_id.into(), kind_from_name(&node_name));
       node_id
     }
   }
@@ -536,7 +532,7 @@ impl GraphContext {
       graph.graph.add_edge(src, dst, amount);
     } else {
       if !graph.graphs.contains_key(self.context.as_str()) {
-        graph.graphs.insert(self.context.clone(), MeritRank::new(MyGraph::new())?);
+        graph.graphs.insert(self.context.clone(), MeritRank::new(Graph::new())?);
       }
       let null_weight    = graph.graph.get_edge(src, dst).unwrap_or(0.0);
       let contexted_rank = graph.graphs.get_mut(self.context.as_str()).unwrap();
@@ -586,16 +582,9 @@ impl GraphContext {
     ego : &str,
   ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
     let mut graph = GRAPH.lock()?;
-    let     id    = graph.info.node_names.get(ego).unwrap().id;
+    let     id    = *graph.info.node_names.get(ego).unwrap();
 
-    //  FIXME
-    //  Add a function to get all neighbors in MeritRank.
-
-    for n in graph.graph.neighbors_weighted(id, true).unwrap().keys() {
-      self.set_edge_locked(&mut graph, id, *n, 0.0)?;
-    }
-
-    for n in graph.graph.neighbors_weighted(id, false).unwrap().keys() {
+    for n in graph.graph.neighbors_weighted(id, Neighbors::All).unwrap().keys() {
       self.set_edge_locked(&mut graph, id, *n, 0.0)?;
     }
 
@@ -625,17 +614,16 @@ impl GraphContext {
 
     let focus_vector : Vec<(NodeId, NodeId, Weight)> =
       rank
-        .neighbors_weighted(focus_id, true).unwrap().iter()
-        .chain(rank.neighbors_weighted(focus_id, false).unwrap().iter())
+        .neighbors_weighted(focus_id, Neighbors::All).unwrap().iter()
         .map(|(target_id, weight)| (focus_id, *target_id, *weight))
         .collect();
 
-    let mut copy = MyGraph::new();
+    let mut copy = Graph::new();
 
     for (a_id, b_id, w_ab) in focus_vector {
-      let b = info.node_id_to_name_locked(b_id)?;
+      let b_kind = rank.get_node_data(b_id).unwrap_or(NodeKind::Unknown);
 
-      if b.starts_with("U") {
+      if b_kind == NodeKind::User {
         if positive_only {
           let score = match rank.get_node_score(a_id, b_id) {
             Ok(x) => x,
@@ -647,20 +635,24 @@ impl GraphContext {
               return Err(x.into());
             }
           };
+
           if score <= 0f64 {
             continue;
           }
         }
 
-        let _ = copy.upsert_edge_with_nodes(a_id, b_id, w_ab)?;
-      } else if b.starts_with("C") || b.starts_with("B") {
+        let _ = copy.upsert_edge_with_nodes(
+          a_id, NodeKind::Unknown,
+          b_id, NodeKind::Unknown,
+          w_ab
+        )?;
+      } else if b_kind == NodeKind::Comment || b_kind == NodeKind::Beacon {
         // ? # For connections user-> comment | beacon -> user,
         // ? # convolve those into user->user
 
         let v_b : Vec<(NodeId, NodeId, Weight)> =
           rank
-            .neighbors_weighted(b_id, true).unwrap().iter()
-            .chain(rank.neighbors_weighted(b_id, false).unwrap().iter())
+            .neighbors_weighted(b_id, Neighbors::All).unwrap().iter()
             .map(|(target_id, weight)| (b_id, *target_id, *weight))
             .collect();
 
@@ -672,11 +664,12 @@ impl GraphContext {
             continue;
           }
 
-          let c = info.node_id_to_name_locked(c_id)?;
+          let c_kind = rank.get_node_data(c_id).unwrap_or(NodeKind::Unknown);
 
-          if !c.starts_with("U") {
+          if c_kind != NodeKind::User {
             continue;
           }
+
           // let w_ac = self.get_transitive_edge_weight(a, b, c);
           // TODO: proper handling of negative edges
           // Note that enemy of my enemy is not my friend.
@@ -684,7 +677,11 @@ impl GraphContext {
           // where comments can't have outgoing negative edges.
           // return w_ab * w_bc * (-1 if w_ab < 0 and w_bc < 0 else 1)
           let w_ac = w_ab * w_bc * (if w_ab < 0.0f64 && w_bc < 0.0f64 { -1.0f64 } else { 1.0f64 });
-          let _ = copy.upsert_edge_with_nodes(a_id, c_id, w_ac)?;
+          let _ = copy.upsert_edge_with_nodes(
+            a_id, NodeKind::Unknown,
+            c_id, NodeKind::Unknown,
+            w_ac
+          )?;
         }
       }
     }
@@ -737,16 +734,16 @@ impl GraphContext {
         new_edge = (a, b, self.get_edge(a, b))
       elif ... */
 
-      let a_name = info.node_id_to_name_locked(a)?;
-      let b_name = info.node_id_to_name_locked(b)?;
-      if b_name.starts_with("C") || b_name.starts_with("B") {
+      let a_kind = rank.get_node_data(a).unwrap_or(NodeKind::Unknown);
+      let b_kind = rank.get_node_data(b).unwrap_or(NodeKind::Unknown);
+      if b_kind == NodeKind::Comment || b_kind == NodeKind::Beacon {
         let w_ab = copy.edge_weight(a, b).unwrap();
         let w_bc = copy.edge_weight(b, c).unwrap();
 
         // get_transitive_edge_weight
         let w_ac: f64 = w_ab * w_bc * (if w_ab < 0.0f64 && w_bc < 0.0f64 { -1.0f64 } else { 1.0f64 });
         copy.upsert_edge(a, c, w_ac)?;
-      } else if a_name.starts_with("U") {
+      } else if a_kind == NodeKind::User {
         let weight = copy.edge_weight(a, b).unwrap();
         copy.upsert_edge(a, b, weight)?;
       }
@@ -766,7 +763,7 @@ impl GraphContext {
     } else if v3.is_empty() {
       // No path found, so add just the focus node to show at least something
       //let node = mrgraph::meritrank::node::Node::new(focus_id);
-      copy.add_node(focus_id);
+      copy.add_node(focus_id, NodeKind::Unknown);
     } else {
       return Err("Gravity graph failure".into());
     }
@@ -848,8 +845,7 @@ impl GraphContext {
 
     let result: Vec<(String, String)> =
       rank
-        .neighbors_weighted(node_id, true).unwrap_or(HashMap::new()).iter()
-        .chain(rank.neighbors_weighted(node_id, false).unwrap_or(HashMap::new()).iter())
+        .neighbors_weighted(node_id, Neighbors::All).unwrap_or(HashMap::new()).iter()
         .map(|(target_id, _weight)| (
           info.node_id_to_name_locked(node_id).unwrap_or(node_id.to_string()),
           info.node_id_to_name_locked(*target_id).unwrap_or(target_id.to_string())
@@ -880,37 +876,40 @@ impl GraphContext {
       },
       &mut graph.info);
 
-    let node_ids : HashMap<NodeId, String> =
+    let node_kinds : HashMap<NodeId, NodeKind> =
       info.node_names.clone()
         .into_iter()
-        .map(|(name, info)| (info.id, name))
+        .map(|(_, id)| (id, rank.get_node_data(id).unwrap_or(NodeKind::Unknown)))
         .collect();
 
-    let users : Vec<(String, NodeInfo)> =
+    let users : Vec<NodeId> =
       info.node_names.clone()
         .into_iter()
-        .filter(|(_, info)| info.kind == NodeType::NodeUser) // filter zero user?
-        .map(|(name, info)| (name, info))
+        .filter(|(_, id)| match rank.get_node_data(*id) {
+          Ok(NodeKind::User) => true,
+          _                  => false,
+        }) // filter zero user?
+        .map(|(_, id)| id)
         .collect();
 
     if users.is_empty() {
       return Ok(Vec::new());
     }
 
-    for (_, info) in users.iter() {
-      rank.calculate(info.id, *NUM_WALK)?;
+    for id in users.iter() {
+      rank.calculate(*id, *NUM_WALK)?;
     }
 
     let edges : Vec<(NodeId, NodeId, Weight)> =
       users.into_iter()
-        .map(|(_name, ego_info)| {
+        .map(|id| {
           let result: Vec<(NodeId, NodeId, Weight)> =
-            rank.get_ranks(ego_info.id, None)?
+            rank.get_ranks(id, None)?
             .into_iter()
-            .map(|(node_id, score)| (ego_info.id, node_id, score))
+            .map(|(node_id, score)| (id, node_id, score))
             .filter(|(ego_id, node_id, score)|
-              node_ids.get(node_id)
-                .map(|node| (node.starts_with("U") || node.starts_with("B")) &&
+              node_kinds.get(node_id)
+                .map(|kind| (*kind == NodeKind::User || *kind == NodeKind::Beacon) &&
                   *score > 0.0 &&
                   ego_id != node_id)
                 .unwrap_or(false) // todo: log
@@ -965,13 +964,9 @@ impl GraphContext {
     let result : Vec<String> =
       info.node_names
         .iter()
-        .map(|(name, info)| (name.clone(), *info))
-        .filter(|(_, info)|
-          match rank.neighbors_weighted(info.id, true) {
-            Some(x) => x.len() > 0,
-            None    => false,
-          } ||
-          match rank.neighbors_weighted(info.id, false) {
+        .map(|(name, id)| (name.clone(), *id))
+        .filter(|(_, id)|
+          match rank.neighbors_weighted(*id, Neighbors::All) {
             Some(x) => x.len() > 0,
             None    => false,
           }
@@ -995,10 +990,9 @@ impl GraphContext {
 
     let mut v : Vec<(String, String, Weight)> = vec![];
     for (_, src) in info.node_names.iter() {
-      let src_name = info.node_id_to_name_locked(src.id)?;
+      let src_name = info.node_id_to_name_locked(*src)?;
       for (dst, weight) in
-        rank.neighbors_weighted(src.id, true).unwrap_or(HashMap::new()).iter()
-          .chain(rank.neighbors_weighted(src.id, false).unwrap_or(HashMap::new()).iter()) {
+        rank.neighbors_weighted(*src, Neighbors::All).unwrap_or(HashMap::new()).iter() {
         let dst_name = info.node_id_to_name_locked(*dst)?;
         v.push((src_name.clone(), dst_name, *weight));
       }
