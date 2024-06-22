@@ -60,7 +60,10 @@ impl NodesInfo {
   }
 
   pub fn node_name_to_id_locked(&self, node_name: &str) -> Result<NodeId, Box<dyn Error + 'static>> {
-    Ok(*self.node_names.get(node_name).unwrap())
+    match self.node_names.get(node_name) {
+      Some(x) => Ok(*x),
+      _       => Err("Node doesn't exist".into())
+    }
   }
 
   pub fn node_id_to_name_locked(&self, node_id: NodeId) -> Result<String, Box<dyn Error + 'static>> {
@@ -877,6 +880,8 @@ impl GraphContext {
       },
       &mut graph.info);
 
+    let zero = info.node_name_to_id_locked(ZERO_NODE.as_str());
+
     let node_kinds : HashMap<NodeId, NodeKind> =
       info.node_names.clone()
         .into_iter()
@@ -886,10 +891,20 @@ impl GraphContext {
     let users : Vec<NodeId> =
       info.node_names.clone()
         .into_iter()
-        .filter(|(_, id)| match rank.get_node_data(*id) {
-          Ok(NodeKind::User) => true,
-          _                  => false,
-        }) // filter zero user?
+        .filter(|(_, id)| {
+          match zero {
+            Ok(x) => {
+              if *id == x {
+                return false;
+              }
+            }
+            _ => {}
+          }
+          return match rank.get_node_data(*id) {
+            Ok(NodeKind::User) => true,
+            _                  => false,
+          };
+        })
         .map(|(_, id)| id)
         .collect();
 
@@ -904,7 +919,7 @@ impl GraphContext {
     let edges : Vec<(NodeId, NodeId, Weight)> =
       users.into_iter()
         .map(|id| {
-          let result: Vec<(NodeId, NodeId, Weight)> =
+          let result : Vec<(NodeId, NodeId, Weight)> =
             rank.get_ranks(id, None)?
             .into_iter()
             .map(|(node_id, score)| (id, node_id, score))
@@ -913,7 +928,7 @@ impl GraphContext {
                 .map(|kind| (*kind == NodeKind::User || *kind == NodeKind::Beacon) &&
                   *score > 0.0 &&
                   ego_id != node_id)
-                .unwrap_or(false) // todo: log
+                .unwrap_or(false)
             ).collect();
           Ok::<Vec<(NodeId, NodeId, Weight)>, MeritRankError>(result)
         })
@@ -929,15 +944,20 @@ impl GraphContext {
       edges
         .iter()
         .filter(|(ego_id, dst_id, _)| {
-            let ego_kind = *node_kinds.get(ego_id).unwrap();
-            let dst_kind = *node_kinds.get(dst_id).unwrap();
-            return  ego_id != dst_id &&
-                    ego_kind == NodeKind::User &&
-                   (dst_kind == NodeKind::User || dst_kind == NodeKind::Beacon);
-            //  TODO
-            //  filter if ego or dest is Zero here (?)
+          match zero {
+            Ok(x) => {
+              if *ego_id == x || *dst_id == x {
+                return false;
+              }
+            },
+            _ => {}
           }
-        )
+          let ego_kind = *node_kinds.get(ego_id).unwrap();
+          let dst_kind = *node_kinds.get(dst_id).unwrap();
+          return  ego_id != dst_id &&
+                  ego_kind == NodeKind::User &&
+                 (dst_kind == NodeKind::User || dst_kind == NodeKind::Beacon);
+        })
         .map(|(ego_id, dst_id, weight)| (*ego_id, *dst_id, *weight))
         .collect();
 
@@ -995,7 +1015,10 @@ impl GraphContext {
   }
 
   fn delete_from_zero(&self) -> Result<(), Box<dyn Error + 'static>> {
-    let edges = self.get_connected(&ZERO_NODE)?;
+    let edges = match self.get_connected(&ZERO_NODE) {
+      Ok(x) => x,
+      _     => return Ok(()),
+    };
 
     for (src, dst) in edges.iter() {
       let _ = self.mr_delete_edge(src, dst)?;
@@ -1013,12 +1036,15 @@ impl GraphContext {
 
     let mut pr = Pagerank::<NodeId>::new();
 
-    let zero = GraphSingleton::node_name_to_id(ZERO_NODE.as_str())?;
+    let zero = GraphSingleton::node_name_to_id(ZERO_NODE.as_str());
 
     reduced
       .iter()
       .filter(|(source, target, _weight)|
-        *source!=zero && *target!=zero
+        match zero {
+          Ok(x) => return *source != x && *target != x,
+          _     => return true,
+        }
       )
       .for_each(|(source, target, _weight)| {
         // TODO: check weight
@@ -1068,7 +1094,11 @@ impl GraphContext {
     let nodes = self.top_nodes()?;
 
     let mut graph = GRAPH.lock()?;
-    let zero      = graph.info.node_name_to_id_locked(ZERO_NODE.as_str())?;
+
+    let zero = match graph.info.node_name_to_id_locked(ZERO_NODE.as_str()) {
+      Ok(x) => x,
+      _     => graph.add_node_id(ZERO_NODE.as_str()),
+    };
 
     for (node_id, amount) in nodes.iter() {
       self.set_edge_locked(&mut graph, zero, *node_id, *amount)?;
