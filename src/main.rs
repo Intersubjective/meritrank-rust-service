@@ -22,6 +22,7 @@ use simple_pagerank::Pagerank;
 use meritrank::{MeritRankError, Weight, NodeId, Neighbors};
 use ctrlc;
 
+
 //  ================================================
 //
 //    ...Previously called mrgraph
@@ -866,7 +867,7 @@ impl GraphContext {
     return Ok(rmp_serde::to_vec(&edges)?);
   }
 
-  fn get_reduced_graph(&self) -> Result<Vec<(String, String, f64)>, Box<dyn Error + 'static>> {
+  fn get_reduced_graph(&self) -> Result<Vec<(NodeId, NodeId, f64)>, Box<dyn Error + 'static>> {
     let graph = &mut *GRAPH.lock()?;
 
     let (rank, info) = (if self.context.is_empty() {
@@ -924,28 +925,20 @@ impl GraphContext {
     // Note:
     // Just eat errors in node_id_to_name_unsafe bellow.
     // Should we pass them out?
-    let result : Vec<(String, String, f64)> =
+    let result : Vec<(NodeId, NodeId, f64)> =
       edges
         .iter()
-        .filter(|(ego_id, dest_id, _)|
-          ego_id != dest_id
-          //  TODO
-          //  filter if ego or dest is Zero here (?)
+        .filter(|(ego_id, dst_id, _)| {
+            let ego_kind = *node_kinds.get(ego_id).unwrap();
+            let dst_kind = *node_kinds.get(dst_id).unwrap();
+            return  ego_id != dst_id &&
+                    ego_kind == NodeKind::User &&
+                   (dst_kind == NodeKind::User || dst_kind == NodeKind::Beacon);
+            //  TODO
+            //  filter if ego or dest is Zero here (?)
+          }
         )
-        .map(|(ego_id, dest_id, weight)| {
-          let ego = info.node_id_to_name_locked(*ego_id).unwrap();
-          (ego, dest_id, weight)
-        })
-        .filter(|(ego, _dest_id, _weight)|
-          ego.starts_with("U")
-        )
-        .map(|(ego, dest_id, weight)| {
-          let dest = info.node_id_to_name_locked(*dest_id).unwrap();
-          (ego, dest, *weight)
-        })
-        .filter(|(_ego, dest, _weight)|
-          dest.starts_with("U") || dest.starts_with("B")
-        )
+        .map(|(ego_id, dst_id, weight)| (*ego_id, *dst_id, *weight))
         .collect();
 
     return Ok(result);
@@ -1011,28 +1004,30 @@ impl GraphContext {
     return Ok(());
   }
 
-  fn top_nodes(&self) -> Result<Vec<(String, f64)>, Box<dyn Error + 'static>> {
+  fn top_nodes(&self) -> Result<Vec<(NodeId, f64)>, Box<dyn Error + 'static>> {
     let reduced = self.get_reduced_graph()?;
 
     if reduced.is_empty() {
       return Err("Reduced graph empty".into());
     }
 
-    let mut pr = Pagerank::<&String>::new();
+    let mut pr = Pagerank::<NodeId>::new();
+
+    let zero = GraphSingleton::node_name_to_id(ZERO_NODE.as_str())?;
 
     reduced
       .iter()
       .filter(|(source, target, _weight)|
-        *source!=*ZERO_NODE && *target!=*ZERO_NODE
+        *source!=zero && *target!=zero
       )
       .for_each(|(source, target, _weight)| {
         // TODO: check weight
-        pr.add_edge(source, target);
+        pr.add_edge(*source, *target);
       });
 
     pr.calculate();
 
-    let (nodes, scores): (Vec<&&String>, Vec<f64>) =
+    let (nodes, scores): (Vec<NodeId>, Vec<f64>) =
       pr
         .nodes()  // already sorted by score
         .into_iter()
@@ -1042,8 +1037,6 @@ impl GraphContext {
 
     let res = nodes
       .into_iter()
-      .cloned()
-      .cloned()
       .zip(scores)
       .collect::<Vec<_>>();
 
@@ -1074,8 +1067,11 @@ impl GraphContext {
 
     let nodes = self.top_nodes()?;
 
-    for (name, amount) in nodes.iter() {
-      let _ = self.mr_put_edge(ZERO_NODE.as_str(), name.as_str(), *amount)?;
+    let mut graph = GRAPH.lock()?;
+    let zero      = graph.info.node_name_to_id_locked(ZERO_NODE.as_str())?;
+
+    for (node_id, amount) in nodes.iter() {
+      self.set_edge_locked(&mut graph, zero, *node_id, *amount)?;
     }
 
     return Ok(rmp_serde::to_vec(&"Ok".to_string())?);
