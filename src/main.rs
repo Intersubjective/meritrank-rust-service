@@ -394,33 +394,33 @@ impl GraphContext {
     } else if let Ok(((("src", "=", ego), ("dest", "=", target)), ())) = rmp_serde::from_slice(slice) {
       self.mr_node_score(ego, target)
     } else if let Ok(((("src", "=", ego), ), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, "", false, f64::MIN, true, f64::MAX, true, None)
-    } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt), ("score", "<", score_lt)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, target_like, false, score_gt, false, score_lt, false, None)
-    } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte), ("score", "<", score_lt)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, target_like, false, score_gte, true, score_lt, false, None)
-    } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">", score_gt), ("score", "<=", score_lt)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, target_like, false, score_gt, false, score_lt, true, None)
-    } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("score", ">=", score_gte), ("score", "<=", score_lt)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, target_like, false, score_gte, true, score_lt, true, None)
-    } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("hide_personal", hide_personal), ("score", ">", score_gt), ("score", "<", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, target_like, hide_personal, score_gt, false, score_lt, false, limit)
-    } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("hide_personal", hide_personal), ("score", ">=", score_gte), ("score", "<", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, target_like, hide_personal, score_gte, true, score_lt, false, limit)
-    } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("hide_personal", hide_personal), ("score", ">", score_gt), ("score", "<=", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, target_like, hide_personal, score_gt, false, score_lt, true, limit)
-    } else if let Ok(((("src", "=", ego), ("target", "like", target_like), ("hide_personal", hide_personal), ("score", ">=", score_gte), ("score", "<=", score_lt), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, target_like, hide_personal, score_gte, true, score_lt, true, limit)
+      self.mr_scores(ego, "", false, f64::MIN, true, f64::MAX, true, None, None)
+    } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("score", ">", score_gt), ("score", "<", score_lt)), ())) = rmp_serde::from_slice(slice) {
+      self.mr_scores(ego, node_kind, false, score_gt, false, score_lt, false, None, None)
+    } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("score", ">=", score_gte), ("score", "<", score_lt)), ())) = rmp_serde::from_slice(slice) {
+      self.mr_scores(ego, node_kind, false, score_gte, true, score_lt, false, None, None)
+    } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("score", ">", score_gt), ("score", "<=", score_lt)), ())) = rmp_serde::from_slice(slice) {
+      self.mr_scores(ego, node_kind, false, score_gt, false, score_lt, true, None, None)
+    } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("score", ">=", score_gte), ("score", "<=", score_lt)), ())) = rmp_serde::from_slice(slice) {
+      self.mr_scores(ego, node_kind, false, score_gte, true, score_lt, true, None, None)
+    } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("hide_personal", hide_personal), ("score", ">", score_gt), ("score", "<", score_lt), ("index", index), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+      self.mr_scores(ego, node_kind, hide_personal, score_gt, false, score_lt, false, index, limit)
+    } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("hide_personal", hide_personal), ("score", ">=", score_gte), ("score", "<", score_lt), ("index", index), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+      self.mr_scores(ego, node_kind, hide_personal, score_gte, true, score_lt, false, index, limit)
+    } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("hide_personal", hide_personal), ("score", ">", score_gt), ("score", "<=", score_lt), ("index", index), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+      self.mr_scores(ego, node_kind, hide_personal, score_gt, false, score_lt, true, index, limit)
+    } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("hide_personal", hide_personal), ("score", ">=", score_gte), ("score", "<=", score_lt), ("index", index), ("limit", limit)), ())) = rmp_serde::from_slice(slice) {
+      self.mr_scores(ego, node_kind, hide_personal, score_gte, true, score_lt, true, index, limit)
     } else if let Ok((((subject, object, amount), ), ())) = rmp_serde::from_slice(slice) {
       self.mr_put_edge(subject, object, amount)
     } else if let Ok(((("src", "delete", ego), ("dest", "delete", target)), ())) = rmp_serde::from_slice(slice) {
       self.mr_delete_edge(ego, target)
     } else if let Ok(((("src", "delete", ego), ), ())) = rmp_serde::from_slice(slice) {
       self.mr_delete_node(ego)
-    } else if let Ok((((ego, "gravity", focus), positive_only, limit), ())) = rmp_serde::from_slice(slice) {
-      self.mr_gravity_graph(ego, focus, positive_only/* true */, limit/* 3 */)
-    } else if let Ok((((ego, "gravity_nodes", focus), positive_only, limit), ())) = rmp_serde::from_slice(slice) {
-      self.mr_gravity_nodes(ego, focus, positive_only /* false */, limit /* 3 */)
+    } else if let Ok((((ego, "gravity", focus), positive_only, index, limit), ())) = rmp_serde::from_slice(slice) {
+      self.mr_gravity_graph(ego, focus, positive_only, index, limit)
+    } else if let Ok((((ego, "gravity_nodes", focus), positive_only, index, limit), ())) = rmp_serde::from_slice(slice) {
+      self.mr_gravity_nodes(ego, focus, positive_only, index, limit)
     } else if let Ok((((ego, "connected"), ), ())) = rmp_serde::from_slice(slice) {
       self.mr_connected(ego)
     } else if let Ok(("nodes", ())) = rmp_serde::from_slice(slice) {
@@ -464,15 +464,26 @@ impl GraphContext {
   fn mr_scores(
     &self,
     ego           : &str,
-    target_like   : &str,
+    kind_str      : &str,
     hide_personal : bool,
     score_lt      : f64,
     score_lte     : bool,
     score_gt      : f64,
     score_gte     : bool,
+    index         : Option<i32>,
     limit         : Option<i32>
   ) -> Result<Vec<u8>, Box<dyn Error + 'static>>
   {
+    let kind = match kind_str {
+      ""  => NodeKind::Unknown,
+      "U" => NodeKind::User,
+      "B" => NodeKind::Beacon,
+      "C" => NodeKind::Comment,
+       _  => {
+         return Err(format!("Invalid node kind \"{}\"; only \"U\", \"B\", \"C\" are allowed", kind_str).into());
+      },
+    };
+
     let graph = &mut *GRAPH.lock()?;
 
     let (rank, info) = (if self.context.is_empty() {
@@ -485,8 +496,10 @@ impl GraphContext {
     let node_id = GraphSingleton::node_name_to_id(ego)?;
 
     //  NOTE
-    //  We don't have to recalculate the scores.
-    let _ = rank.calculate(node_id, *NUM_WALK)?;
+    //  We don't have to recalculate scores since we use
+    //  incremental MeritRank.
+
+    //let _ = rank.calculate(node_id, *NUM_WALK)?;
 
     let ranks = rank.get_ranks(node_id, None)?;
 
@@ -495,33 +508,40 @@ impl GraphContext {
       .map(|(n, w)| {
         (
           ego,
-          info.node_id_to_name_locked(n).unwrap_or(n.to_string()),
+          n,
+          rank.get_node_data(n).unwrap_or(NodeKind::Unknown),
           w,
         )
       })
-      .filter(|(_, target, _)| target.starts_with(target_like))
-      .filter(|(_, _, score)| score_gt < *score || (score_gte && score_gt == *score))
-      .filter(|(_, _, score)| *score < score_lt || (score_lte && score_lt == *score));
+      .filter(|(_, _, target_kind, _)| {
+        match kind {
+          NodeKind::Unknown => true,
+          _                 => kind == *target_kind,
+        }
+      })
+      .filter(|(_, _, _, score)| score_gt < *score || (score_gte && score_gt == *score))
+      .filter(|(_, _, _, score)| *score < score_lt || (score_lte && score_lt == *score));
 
     let result = intermediate
-      .filter(|(_ego, target, _)|
+      .filter(|(_ego, target_id, target_kind, _)|
         if hide_personal {
-          match info.node_name_to_id_locked(target) {
-            Ok(target_id) =>
-              !((target.starts_with("C") || target.starts_with("B")) &&
-                rank.get_edge(target_id, node_id).is_some()),
-            _ => true
-          }
-        } else { true }
-      );
+          !((*target_kind == NodeKind::Comment || *target_kind == NodeKind::Beacon) &&
+            rank.get_edge(*target_id, node_id).is_some())
+        } else {
+          true
+        }
+      )
+      .map(|(ego, target_id, _, weight)| {
+        (ego, info.node_id_to_name_locked(target_id).unwrap(), weight)
+      });
 
-    let limited: Vec<(&str, String, Weight)> =
-      match limit {
-        Some(limit) => result.take(limit.try_into().unwrap()).collect(),
-        None => result.collect(),
-      };
+    let page : Vec<(&str, String, Weight)> =
+      result
+        .skip(index.unwrap_or(0).try_into().unwrap())
+        .take(limit.unwrap_or(i32::MAX).try_into().unwrap())
+        .collect();
 
-    let v: Vec<u8> = rmp_serde::to_vec(&limited)?;
+    let v: Vec<u8> = rmp_serde::to_vec(&page)?;
     Ok(v)
   }
 
@@ -600,6 +620,7 @@ impl GraphContext {
     ego           : &str,
     focus         : &str,
     positive_only : bool,
+    index         : i32,
     limit         : i32
   ) -> Result<
       (Vec<(String, String, Weight)>, HashMap<String, Weight>),
@@ -677,7 +698,7 @@ impl GraphContext {
           // let w_ac = self.get_transitive_edge_weight(a, b, c);
           // TODO: proper handling of negative edges
           // Note that enemy of my enemy is not my friend.
-          // Though, this is pretty irrelevant for our current case
+          // Thougnh, this is pretty irrelevant for our current case
           // where comments can't have outgoing negative edges.
           // return w_ab * w_bc * (-1 if w_ab < 0 and w_bc < 0 else 1)
           let w_ac = w_ab * w_bc * (if w_ab < 0.0f64 && w_bc < 0.0f64 { -1.0f64 } else { 1.0f64 });
@@ -708,13 +729,14 @@ impl GraphContext {
     //sort by weight
 
     // for dest in sorted(neighbours, key=lambda x: self.get_node_score(ego, x))[limit:]:
-    let limited: Vec<&(&EdgeIndex, &NodeIndex)> =
+    let page : Vec<&(&EdgeIndex, &NodeIndex)> =
       sorted.iter()
         .map(|(_, tuple)| tuple)
+        .skip(index.try_into().unwrap())
         .take(limit.try_into().unwrap())
         .collect();
 
-    for (_edge_index, node_index) in limited {
+    for (_edge_index, node_index) in page {
       let node_id = copy.index2node(**node_index);
       copy.remove_edge(ego_id, node_id);
       //G.remove_node(dest) // ???
@@ -811,25 +833,27 @@ impl GraphContext {
 
   fn mr_gravity_graph(
     &self,
-    ego: &str,
-    focus: &str,
-    positive_only: bool,
-    limit: Option<i32>
+    ego           : &str,
+    focus         : &str,
+    positive_only : bool,
+    index         : Option<i32>,
+    limit         : Option<i32>
   ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    let (result, _) = self.gravity_graph(ego, focus, positive_only, limit.unwrap_or(i32::MAX))?;
+    let (result, _) = self.gravity_graph(ego, focus, positive_only, index.unwrap_or(0), limit.unwrap_or(i32::MAX))?;
     let v: Vec<u8> = rmp_serde::to_vec(&result)?;
     Ok(v)
   }
 
   fn mr_gravity_nodes(
     &self,
-    ego: &str,
-    focus: &str,
-    positive_only: bool,
-    limit: Option<i32>
+    ego           : &str,
+    focus         : &str,
+    positive_only : bool,
+    index         : Option<i32>,
+    limit         : Option<i32>
   ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
     // TODO: change HashMap to string pairs here!?
-    let (_, hash_map) = self.gravity_graph(ego, focus, positive_only, limit.unwrap_or(i32::MAX))?;
+    let (_, hash_map) = self.gravity_graph(ego, focus, positive_only, index.unwrap_or(0), limit.unwrap_or(i32::MAX))?;
     let result: Vec<_> = hash_map.iter().collect();
     let v: Vec<u8> = rmp_serde::to_vec(&result)?;
     Ok(v)
@@ -861,13 +885,32 @@ impl GraphContext {
 
   fn mr_connected(
     &self,
-    ego: &str
+    ego   : &str
   ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
     let edges = self.get_connected(ego)?;
     if edges.is_empty() {
       return Err("No edges".into());
     }
     return Ok(rmp_serde::to_vec(&edges)?);
+  }
+
+  fn recalculate_all(&self, num_walk : usize) -> Result<(), Box<dyn Error + 'static>> {
+    let graph = &mut *GRAPH.lock()?;
+
+    let (rank, info) = (if self.context.is_empty() {
+        &mut graph.graph
+      } else {
+        graph.graphs.get_mut(self.context.as_str()).unwrap()
+      },
+      &mut graph.info);
+
+    for (_, id) in info.node_names.iter() {
+      if rank.get_node_data(*id)? == NodeKind::User {
+        rank.calculate(*id, num_walk)?;
+      }
+    }
+
+    Ok(())
   }
 
   fn get_reduced_graph(&self) -> Result<Vec<(NodeId, NodeId, f64)>, Box<dyn Error + 'static>> {
@@ -883,29 +926,29 @@ impl GraphContext {
     let zero = info.node_name_to_id_locked(ZERO_NODE.as_str());
 
     let node_kinds : HashMap<NodeId, NodeKind> =
-      info.node_names.clone()
-        .into_iter()
-        .map(|(_, id)| (id, rank.get_node_data(id).unwrap_or(NodeKind::Unknown)))
+      info.node_names
+        .iter()
+        .map(|(_, id)| (*id, rank.get_node_data(*id).unwrap_or(NodeKind::Unknown)))
         .collect();
 
     let users : Vec<NodeId> =
-      info.node_names.clone()
-        .into_iter()
+      info.node_names
+        .iter()
         .filter(|(_, id)| {
           match zero {
             Ok(x) => {
-              if *id == x {
+              if **id == x {
                 return false;
               }
             }
             _ => {}
           }
-          return match rank.get_node_data(*id) {
+          return match rank.get_node_data(**id) {
             Ok(NodeKind::User) => true,
             _                  => false,
           };
         })
-        .map(|(_, id)| id)
+        .map(|(_, id)| *id)
         .collect();
 
     if users.is_empty() {
@@ -1089,20 +1132,25 @@ impl GraphContext {
     //  NOTE
     //  This func is not thread-safe.
 
+    self.recalculate_all(0)?; // FIXME Ad hok hack
     self.delete_from_zero()?;
 
     let nodes = self.top_nodes()?;
 
-    let mut graph = GRAPH.lock()?;
+    self.recalculate_all(0)?; // FIXME Ad hok hack
+    {
+      let mut graph = GRAPH.lock()?;
 
-    let zero = match graph.info.node_name_to_id_locked(ZERO_NODE.as_str()) {
-      Ok(x) => x,
-      _     => graph.add_node_id(ZERO_NODE.as_str()),
-    };
+      let zero = match graph.info.node_name_to_id_locked(ZERO_NODE.as_str()) {
+        Ok(x) => x,
+        _     => graph.add_node_id(ZERO_NODE.as_str()),
+      };
 
-    for (node_id, amount) in nodes.iter() {
-      self.set_edge_locked(&mut graph, zero, *node_id, *amount)?;
+      for (node_id, amount) in nodes.iter() {
+        self.set_edge_locked(&mut graph, zero, *node_id, *amount)?;
+      }
     }
+    self.recalculate_all(*NUM_WALK)?; // FIXME Ad hok hack
 
     return Ok(rmp_serde::to_vec(&"Ok".to_string())?);
   }
