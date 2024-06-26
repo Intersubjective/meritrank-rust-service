@@ -27,9 +27,13 @@ jobs:
     - uses: actions/checkout@v4
     - name: Build docker image
       run: |
-        docker build -t meritrank-service:dev .
-        docker image save meritrank-service:dev -o meritrank_service_dev.tar
-    - name: Upload docker image
+        docker build -t vbulavintsev/meritrank-service:dev .
+        docker image save vbulavintsev/meritrank-service:dev -o meritrank_service_dev.tar
+    - name: Push docker image to Dockerhub
+      run: |
+        docker login -u vbulavintsev -p ${{ secrets.DOCKERHUB_TOKEN }}
+        docker image push vbulavintsev/meritrank-service:dev
+    - name: Upload docker image artifact
       uses: actions/upload-artifact@v4
       with:
         name: meritrank_service_dev.tar
