@@ -1203,7 +1203,7 @@ fn zerorec_graph() {
 
   let _ = x.mr_zerorec().unwrap();
 
-  let (res, _) = x.gravity_graph("Uadeb43da4abb", ZERO_NODE.as_str(), false, 0, 10000).unwrap();
+  let (res, _) = x.gravity_graph("Uadeb43da4abb", ZERO_NODE.as_str(), false, 10000).unwrap();
 
   let n = res.len();
 
@@ -1220,7 +1220,7 @@ fn zerorec_graph_positive_only() {
 
   let _ = x.mr_zerorec().unwrap();
 
-  let (res, _) = x.gravity_graph("Uadeb43da4abb", ZERO_NODE.as_str(), true, 0, 10000).unwrap();
+  let (res, _) = x.gravity_graph("Uadeb43da4abb", ZERO_NODE.as_str(), true, 10000).unwrap();
 
   let n = res.len();
 
