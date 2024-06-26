@@ -38,10 +38,8 @@ jobs:
         while [ $(docker manifest inspect vbulavintsev/meritrank-service:$VER-$N >/dev/null 2>&1; echo $?) -eq 0 ]; do
           let N++
         done
-        export TAG="$VER-$N"
-        echo $TAG
-        # docker login -u vbulavintsev -p ${{ secrets.DOCKERHUB_TOKEN }}
-        # docker image push vbulavintsev/meritrank-service:dev
+        docker login -u vbulavintsev -p ${{ secrets.DOCKERHUB_TOKEN }}
+        docker image push vbulavintsev/meritrank-service:$VER-$N
     - name: Upload docker image artifact
       uses: actions/upload-artifact@v4
       with:
