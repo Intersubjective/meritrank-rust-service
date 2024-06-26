@@ -35,7 +35,7 @@ jobs:
       run: |
         export VER="dev-$(date +'%Y-%m')"
         export N=1
-        while [ $(docker manifest inspect vbulavintsev/meritrank-service:$VER-$N >/dev/null 2>&1; echo $?) -ne 0 ]; do
+        while [ $(docker manifest inspect vbulavintsev/meritrank-service:$VER-$N >/dev/null 2>&1; echo $?) -eq 0 ]; do
           let N++
         done
         export TAG="$VER-$N"
