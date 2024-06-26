@@ -35,7 +35,6 @@ jobs:
         done
         echo "TAG=$VER-$N" >> $GITHUB_ENV
     - name: Build docker image
-      shell: bash
       run: |
         docker build -t vbulavintsev/meritrank-service:$TAG .
     - name: Push docker image to Dockerhub
