@@ -1203,7 +1203,7 @@ fn zerorec_graph() {
 
   let _ = x.mr_zerorec().unwrap();
 
-  let (res, _) = x.gravity_graph("Uadeb43da4abb", ZERO_NODE.as_str(), false, 10000).unwrap();
+  let (res, _) = x.gravity_graph("Uadeb43da4abb", ZERO_NODE.as_str(), false).unwrap();
 
   let n = res.len();
 
@@ -1220,7 +1220,7 @@ fn zerorec_graph_positive_only() {
 
   let _ = x.mr_zerorec().unwrap();
 
-  let (res, _) = x.gravity_graph("Uadeb43da4abb", ZERO_NODE.as_str(), true, 10000).unwrap();
+  let (res, _) = x.gravity_graph("Uadeb43da4abb", ZERO_NODE.as_str(), true).unwrap();
 
   let n = res.len();
 
@@ -1299,4 +1299,34 @@ fn null_context_invariant() {
   assert_eq!(edges, edges_expected);
 
   let _ = GraphContext::null().mr_reset().unwrap();
+}
+
+#[test]
+fn scores() {
+  let x = GraphContext::new("X");
+
+  let _ = x.mr_put_edge("U1", "U2", 2.0).unwrap();
+  let _ = x.mr_put_edge("U1", "U3", 1.0).unwrap();
+  let _ = x.mr_put_edge("U2", "U3", 3.0).unwrap();
+
+  let res_bytes = x.mr_scores("U1", "U", false, 10.0, false, 0.0, false, 0, u32::MAX).unwrap();
+
+  let res : Vec<(&str, String, Weight)> = rmp_serde::from_slice(res_bytes.as_slice()).unwrap();
+
+  assert_eq!(res[0].0, "U1");
+  assert_eq!(res[0].1, "U1");
+  assert!(res[0].2 > 0.3);
+  assert!(res[0].2 < 0.5);
+
+  assert_eq!(res[1].0, "U1");
+  assert_eq!(res[1].1, "U3");
+  assert!(res[1].2 > 0.3);
+  assert!(res[1].2 < 0.5);
+
+  assert_eq!(res[2].0, "U1");
+  assert_eq!(res[2].1, "U2");
+  assert!(res[2].2 > 0.2);
+  assert!(res[2].2 < 0.4);
+
+  assert_eq!(res.len(), 3);
 }
