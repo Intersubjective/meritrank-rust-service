@@ -22,7 +22,6 @@ use simple_pagerank::Pagerank;
 use meritrank::{MeritRankError, Weight, NodeId, Neighbors};
 use ctrlc;
 
-
 //  ================================================
 //
 //    ...Previously called mrgraph
