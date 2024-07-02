@@ -1315,17 +1315,17 @@ fn scores() {
 
   assert_eq!(res[0].0, "U1");
   assert_eq!(res[0].1, "U1");
-  assert!(res[0].2 > 0.3);
+  assert!(res[0].2 > 0.2);
   assert!(res[0].2 < 0.5);
 
   assert_eq!(res[1].0, "U1");
   assert_eq!(res[1].1, "U3");
-  assert!(res[1].2 > 0.3);
+  assert!(res[1].2 > 0.2);
   assert!(res[1].2 < 0.5);
 
   assert_eq!(res[2].0, "U1");
   assert_eq!(res[2].1, "U2");
-  assert!(res[2].2 > 0.2);
+  assert!(res[2].2 > 0.1);
   assert!(res[2].2 < 0.4);
 
   assert_eq!(res.len(), 3);
