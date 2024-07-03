@@ -421,14 +421,14 @@ impl GraphContext {
       self.mr_delete_node(ego)
     } else if let Ok((((ego, "gravity", focus), positive_only, index, count), ())) = rmp_serde::from_slice(slice) {
       self.mr_graph(ego, focus, positive_only, index, count)
-    } else if let Ok((((ego, "gravity_nodes", focus), positive_only, index, count), ())) = rmp_serde::from_slice(slice) {
-      self.mr_nodes(ego, focus, positive_only, index, count)
     } else if let Ok((((ego, "connected"), ), ())) = rmp_serde::from_slice(slice) {
       self.mr_connected(ego)
     } else if let Ok(("nodes", ())) = rmp_serde::from_slice(slice) {
       self.mr_nodelist()
     } else if let Ok(("edges", ())) = rmp_serde::from_slice(slice) {
       self.mr_edges()
+    } else if let Ok(("users_stats", ego, ())) = rmp_serde::from_slice(slice) {
+      self.mr_users_stats(ego)
     } else if let Ok(("reset", ())) = rmp_serde::from_slice(slice) {
       self.mr_reset()
     } else if let Ok(("zerorec", ())) = rmp_serde::from_slice(slice) {
@@ -451,12 +451,11 @@ impl GraphContext {
     let rank      = &mut graph.graph;
 
     let w = match rank.get_node_score(ego_id, target_id) {
-      Err(MeritRankError::NodeIsNotCalculated) => {
+      Ok(x) => x,
+      _     => {
         let _ = rank.calculate(ego_id, *NUM_WALK)?;
         rank.get_node_score(ego_id, target_id)?
-      },
-      Err(x)    => return Err(x.into()),
-      Ok(score) => score,
+      }
     };
 
     let result: Vec<(&str, &str, f64)> = [(ego, target, w)].to_vec();
@@ -627,7 +626,7 @@ impl GraphContext {
     focus         : &str,
     positive_only : bool
   ) -> Result<
-      (Vec<(String, String, Weight)>, HashMap<String, Weight>),
+      Vec<(String, String, Weight)>,
       Box<dyn Error + 'static>
   > {
     let graph = &mut *GRAPH.lock()?;
@@ -656,12 +655,9 @@ impl GraphContext {
         if positive_only {
           let score = match rank.get_node_score(a_id, b_id) {
             Ok(x) => x,
-            Err(MeritRankError::NodeIsNotCalculated) => {
+            _ => {
               rank.calculate(a_id, *NUM_WALK)?;
               rank.get_node_score(a_id, b_id)?
-            },
-            Err(x) => {
-              return Err(x.into());
             }
           };
 
@@ -732,7 +728,6 @@ impl GraphContext {
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     //sort by weight
 
-    // for dest in sorted(neighbours, key=lambda x: self.get_node_score(ego, x))[limit:]:
     let limited : Vec<&(&EdgeIndex, &NodeIndex)> =
       sorted.iter()
         .map(|(_, tuple)| tuple)
@@ -803,7 +798,7 @@ impl GraphContext {
     // self.remove_self_edges(copy);
     // todo: just not let them pass into the graph
 
-    let (nodes, edges) = copy.all();
+    let (_, edges) = copy.all();
 
     let table: Vec<(String, String, f64)> =
       edges
@@ -815,22 +810,7 @@ impl GraphContext {
         })
         .collect::<Vec<_>>();
 
-    let nodes_dict: HashMap<String, Weight> =
-      nodes
-        .iter()
-        .map(|node_id| {
-          let name = info.node_id_to_name_locked(*node_id).unwrap();
-
-          if !rank.get_personal_hits().contains_key(&ego_id) {
-            let _ = rank.calculate(ego_id, *NUM_WALK).unwrap();
-          }
-          let score =
-            rank.get_node_score(ego_id, *node_id).unwrap();
-          (name, score)
-        })
-        .collect::<HashMap<String, Weight>>();
-
-    Ok((table, nodes_dict))
+    Ok(table)
   }
 
   fn mr_graph(
@@ -841,22 +821,8 @@ impl GraphContext {
     index         : u32,
     count         : u32
   ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    let (edges, _)       = self.gravity_graph(ego, focus, positive_only)?;
+    let edges            = self.gravity_graph(ego, focus, positive_only)?;
     let result : Vec<_>  = edges.iter().skip(index as usize).take(count as usize).collect();
-    let v      : Vec<u8> = rmp_serde::to_vec(&result)?;
-    Ok(v)
-  }
-
-  fn mr_nodes(
-    &self,
-    ego           : &str,
-    focus         : &str,
-    positive_only : bool,
-    index         : u32,
-    count         : u32
-  ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    let (_, hash_map)    = self.gravity_graph(ego, focus, positive_only)?;
-    let result : Vec<_>  = hash_map.iter().skip(index as usize).take(count as usize).collect();
     let v      : Vec<u8> = rmp_serde::to_vec(&result)?;
     Ok(v)
   }
@@ -1053,6 +1019,49 @@ impl GraphContext {
         rank.neighbors_weighted(*src, Neighbors::All).unwrap_or(HashMap::new()).iter() {
         let dst_name = info.node_id_to_name_locked(*dst)?;
         v.push((src_name.clone(), dst_name, *weight));
+      }
+    }
+
+    Ok(rmp_serde::to_vec(&v)?)
+  }
+
+  fn mr_users_stats(&self, ego : &str) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
+    let graph = &mut *GRAPH.lock()?;
+
+    let (rank, info) = (if self.context.is_empty() {
+        &mut graph.graph
+      } else {
+        graph.graphs.get_mut(self.context.as_str()).unwrap()
+      },
+      &mut graph.info);
+
+    let ego_id = info.node_name_to_id_locked(ego)?;
+
+    let ranks = match rank.get_ranks(ego_id, None) {
+      Ok(x) => x,
+      _     => {
+        let _ = rank.calculate(ego_id, *NUM_WALK)?;
+        rank.get_ranks(ego_id, None)?
+      }
+    };
+
+    let mut v = Vec::<(String, Weight, Weight)>::new();
+
+    v.reserve_exact(ranks.len());
+
+    for (node, score) in ranks {
+      if score > 0.0 && rank.get_node_data(node).unwrap_or(NodeKind::Unknown) == NodeKind::User {
+        v.push((
+          info.node_id_to_name_locked(node)?,
+          score,
+          match rank.get_node_score(node, ego_id) {
+            Ok(x) => x,
+            _     => {
+              let _ = rank.calculate(node, *NUM_WALK)?;
+              rank.get_node_score(node, ego_id)?
+            }
+          }
+        ));
       }
     }
 

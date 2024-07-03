@@ -1203,7 +1203,7 @@ fn zerorec_graph() {
 
   let _ = x.mr_zerorec().unwrap();
 
-  let (res, _) = x.gravity_graph("Uadeb43da4abb", ZERO_NODE.as_str(), false).unwrap();
+  let res = x.gravity_graph("Uadeb43da4abb", ZERO_NODE.as_str(), false).unwrap();
 
   let n = res.len();
 
@@ -1220,7 +1220,7 @@ fn zerorec_graph_positive_only() {
 
   let _ = x.mr_zerorec().unwrap();
 
-  let (res, _) = x.gravity_graph("Uadeb43da4abb", ZERO_NODE.as_str(), true).unwrap();
+  let res = x.gravity_graph("Uadeb43da4abb", ZERO_NODE.as_str(), true).unwrap();
 
   let n = res.len();
 
@@ -1311,7 +1311,9 @@ fn scores() {
 
   let res_bytes = x.mr_scores("U1", "U", false, 10.0, false, 0.0, false, 0, u32::MAX).unwrap();
 
-  let res : Vec<(&str, String, Weight)> = rmp_serde::from_slice(res_bytes.as_slice()).unwrap();
+  let res : Vec<(String, String, Weight)> = rmp_serde::from_slice(res_bytes.as_slice()).unwrap();
+
+  assert_eq!(res.len(), 3);
 
   assert_eq!(res[0].0, "U1");
   assert_eq!(res[0].1, "U1");
@@ -1327,6 +1329,61 @@ fn scores() {
   assert_eq!(res[2].1, "U2");
   assert!(res[2].2 > 0.1);
   assert!(res[2].2 < 0.4);
+}
+
+#[test]
+fn users_stats() {
+  let x = GraphContext::new("");
+
+  let _ = x.mr_put_edge("U1", "U2", 3.0).unwrap();
+  let _ = x.mr_put_edge("U1", "U3", 1.0).unwrap();
+  let _ = x.mr_put_edge("U2", "U1", 2.0).unwrap();
+  let _ = x.mr_put_edge("U2", "U3", 4.0).unwrap();
+  let _ = x.mr_put_edge("U3", "U1", 3.0).unwrap();
+  let _ = x.mr_put_edge("U3", "U2", 2.0).unwrap();
+
+  let res_bytes = x.mr_users_stats("U1").unwrap();
+
+  let res : Vec<(String, Weight, Weight)> = rmp_serde::from_slice(res_bytes.as_slice()).unwrap();
 
   assert_eq!(res.len(), 3);
+
+  let mut u1 = true;
+  let mut u2 = true;
+  let mut u3 = true;
+
+  for x in res.iter() {
+    match x.0.as_str() {
+      "U1" => {
+        assert!(res[0].1 > 0.3);
+        assert!(res[0].1 < 0.45);
+        assert!(res[0].2 > 0.3);
+        assert!(res[0].2 < 0.45);
+        assert!(u1);
+        u1 = false;
+      },
+
+      "U2" => {
+        assert!(res[1].1 > 0.3);
+        assert!(res[1].1 < 0.4);
+        assert!(res[1].2 > 0.2);
+        assert!(res[1].2 < 0.35);
+        assert!(u2);
+        u2 = false;
+      },
+
+      "U3" => {
+        assert!(res[2].1 > 0.2);
+        assert!(res[2].1 < 0.35);
+        assert!(res[2].2 > 0.25);
+        assert!(res[2].2 < 0.35);
+        assert!(u3);
+        u3 = false;
+      },
+
+      _ => {
+        assert!(false);
+      },
+    };
+  }
 }
