@@ -1332,6 +1332,20 @@ fn scores() {
 }
 
 #[test]
+fn scores_unknown_context() {
+  let x = GraphContext::new("X");
+  let y = GraphContext::new("Y");
+
+  let _ = x.mr_put_edge("U1", "U2", 2.0).unwrap();
+  let _ = x.mr_put_edge("U1", "U3", 1.0).unwrap();
+  let _ = x.mr_put_edge("U2", "U3", 3.0).unwrap();
+
+  let res_bytes = y.mr_scores("U1", "U", false, 10.0, false, 0.0, false, 0, u32::MAX);
+
+  assert_eq!(res_bytes.err().unwrap().to_string(), "No context");
+}
+
+#[test]
 fn users_stats() {
   let x = GraphContext::new("");
 

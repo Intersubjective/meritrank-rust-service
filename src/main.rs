@@ -29,7 +29,11 @@ use ctrlc;
 //  ================================================
 
 lazy_static::lazy_static! {
-  pub static ref GRAPH: Arc<Mutex<GraphSingleton>> = Arc::new(Mutex::new(GraphSingleton::new()));
+  //  FIXME
+  //  Use local object instead of a singleton.
+  pub static ref GRAPH : Arc<Mutex<GraphSingleton>> =
+    Arc::new(Mutex::new(GraphSingleton::new()
+      .expect("Unable to create graph singleton")));
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Default)]
@@ -92,18 +96,19 @@ fn kind_from_name(name : &str) -> NodeKind {
 
 impl GraphSingleton {
   /// Constructor
-  pub fn new() -> GraphSingleton {
-    GraphSingleton {
-      graph  : MeritRank::new(Graph::<NodeKind>::new()).unwrap(),
+  pub fn new() -> Result<GraphSingleton, Box<dyn Error + 'static>> {
+    Ok(GraphSingleton {
+      graph  : MeritRank::new(Graph::<NodeKind>::new())?,
       graphs : HashMap::new(),
       info   : NodesInfo::new(),
-    }
+    })
   }
 
-  pub fn reset(&mut self) {
-    self.graph  = MeritRank::new(Graph::new()).unwrap();
+  pub fn reset(&mut self) -> Result<(), Box<dyn Error + 'static>> {
+    self.graph  = MeritRank::new(Graph::new())?;
     self.graphs = HashMap::new();
     self.info   = NodesInfo::new();
+    Ok(())
   }
 
   pub fn contexts() -> Result<Vec<String>, Box<dyn Error + 'static>> {
@@ -126,17 +131,17 @@ impl GraphSingleton {
     }
   }
 
-  pub fn add_node_id_contexted(&mut self, context : &str, node_name : &str) -> NodeId {
+  pub fn add_node_id_contexted(&mut self, context : &str, node_name : &str) -> Result<NodeId, Box<dyn Error + 'static>> {
     if let Some(&n) = self.info.node_names.get(node_name) {
-      n
+      Ok(n)
     } else {
       let node_id = self.add_node_id(node_name); // create a node in null-context
       if !self.graphs.contains_key(context) {
-        self.graphs.insert(context.to_string(), MeritRank::new(Graph::new()).unwrap());
+        self.graphs.insert(context.to_string(), MeritRank::new(Graph::new())?);
       }
-      let graph = self.graphs.get_mut(context).unwrap();
+      let graph = self.graphs.get_mut(context).ok_or("No context")?;
       graph.add_node(node_id.into(), kind_from_name(&node_name));
-      node_id
+      Ok(node_id)
     }
   }
 
@@ -182,9 +187,9 @@ lazy_static::lazy_static! {
       .and_then(|s| s.parse::<usize>().ok())
       .unwrap_or(100);
 
-  static ref EMPTY_RESULT: Vec<u8> = {
-    const EMPTY_ROWS_VEC: Vec<(&str, &str, f64)> = Vec::new();
-    rmp_serde::to_vec(&EMPTY_ROWS_VEC).unwrap()
+  static ref EMPTY_RESULT : Vec<u8> = {
+    const EMPTY_ROWS_VEC : Vec<(&str, &str, f64)> = Vec::new();
+    rmp_serde::to_vec(&EMPTY_ROWS_VEC).expect("Unable to serialize empty result")
   };
 }
 
@@ -254,12 +259,12 @@ fn main_async(threads : usize) -> Result<(), Box<dyn Error + 'static>> {
 fn worker_callback(aio: Aio, ctx: &Context, res: AioResult) {
   match res {
     // We successfully sent the message, wait for a new one.
-    AioResult::Send(Ok(_)) => ctx.recv(&aio).unwrap(),
+    AioResult::Send(Ok(_)) => ctx.recv(&aio).expect("RECV failed"),
 
     // We successfully received a message.
     AioResult::Recv(Ok(req)) => {
       let msg: Vec<u8> = process(req);
-      ctx.send(&aio, msg.as_slice()).unwrap();
+      ctx.send(&aio, msg.as_slice()).expect("SEND failed");
     }
 
     AioResult::Sleep(_) => {},
@@ -281,8 +286,8 @@ fn process(req: Message) -> Vec<u8> {
   ctx.process(slice)
     .map(|msg| msg)
     .unwrap_or_else(|e| {
-      let s: String = e.to_string();
-      rmp_serde::to_vec(&s).unwrap()
+      let s : String = e.to_string();
+      rmp_serde::to_vec(&s).expect("Unable to serialize error string")
     })
 }
 
@@ -294,8 +299,8 @@ fn mr_service() -> Result<Vec<u8>, Box<dyn Error + 'static>> {
 fn mr_node_score_null(ego : &str, target : &str) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
   let mut graph = GRAPH.lock()?;
 
-  let ego_id    = graph.info.node_name_to_id_locked(ego).unwrap();
-  let target_id = graph.info.node_name_to_id_locked(target).unwrap();
+  let ego_id    = graph.info.node_name_to_id_locked(ego)?;
+  let target_id = graph.info.node_name_to_id_locked(target)?;
 
   let mut w : Weight = 0.0;
   for (_, rank) in graph.graphs.iter_mut() {
@@ -490,7 +495,7 @@ impl GraphContext {
     let (rank, info) = (if self.context.is_empty() {
         &mut graph.graph
       } else {
-        graph.graphs.get_mut(self.context.as_str()).unwrap()
+        graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?
       },
       &mut graph.info);
 
@@ -537,16 +542,19 @@ impl GraphContext {
         }
       )
       .map(|(ego, target_id, _, weight)| {
-        (ego, info.node_id_to_name_locked(target_id).unwrap(), weight)
+        match info.node_id_to_name_locked(target_id) {
+          Ok(x)  => Ok((ego, x, weight)),
+          Err(x) => Err(x)
+        }
       });
 
-    let page : Vec<(&str, String, Weight)> =
+    let page : Result<Vec<(&str, String, Weight)>, _> =
       result
         .skip(index as usize)
         .take(count as usize)
         .collect();
 
-    let v: Vec<u8> = rmp_serde::to_vec(&page)?;
+    let v: Vec<u8> = rmp_serde::to_vec(&page?)?;
     Ok(v)
   }
 
@@ -564,7 +572,7 @@ impl GraphContext {
         graph.graphs.insert(self.context.clone(), MeritRank::new(Graph::new())?);
       }
       let null_weight    = graph.graph.get_edge(src, dst).unwrap_or(0.0);
-      let contexted_rank = graph.graphs.get_mut(self.context.as_str()).unwrap();
+      let contexted_rank = graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?;
       let old_weight     = contexted_rank.get_edge(src, dst).unwrap_or(0.0);
 
       contexted_rank.add_edge(src, dst, amount);
@@ -587,8 +595,8 @@ impl GraphContext {
         ( graph.add_node_id(src),
           graph.add_node_id(dst) )
       } else {
-        ( graph.add_node_id_contexted(self.context.as_str(), src),
-          graph.add_node_id_contexted(self.context.as_str(), dst) )
+        ( graph.add_node_id_contexted(self.context.as_str(), src)?,
+          graph.add_node_id_contexted(self.context.as_str(), dst)? )
       };
 
     self.set_edge_locked(&mut graph, src_id, dst_id, amount)?;
@@ -611,9 +619,9 @@ impl GraphContext {
     ego : &str,
   ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
     let mut graph = GRAPH.lock()?;
-    let     id    = *graph.info.node_names.get(ego).unwrap();
+    let     id    = *graph.info.node_names.get(ego).ok_or("No node")?;
 
-    for n in graph.graph.neighbors_weighted(id, Neighbors::All).unwrap().keys() {
+    for n in graph.graph.neighbors_weighted(id, Neighbors::All).ok_or("Unable to get neighbors")?.keys() {
       self.set_edge_locked(&mut graph, id, *n, 0.0)?;
     }
 
@@ -634,7 +642,7 @@ impl GraphContext {
     let (rank, info) = (if self.context.is_empty() {
         &mut graph.graph
       } else {
-        graph.graphs.get_mut(self.context.as_str()).unwrap()
+        graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?
       },
       &mut graph.info);
 
@@ -642,7 +650,7 @@ impl GraphContext {
 
     let focus_vector : Vec<(NodeId, NodeId, Weight)> =
       rank
-        .neighbors_weighted(focus_id, Neighbors::All).unwrap().iter()
+        .neighbors_weighted(focus_id, Neighbors::All).ok_or("Unable to get neighbors")?.iter()
         .map(|(target_id, weight)| (focus_id, *target_id, *weight))
         .collect();
 
@@ -677,7 +685,7 @@ impl GraphContext {
 
         let v_b : Vec<(NodeId, NodeId, Weight)> =
           rank
-            .neighbors_weighted(b_id, Neighbors::All).unwrap().iter()
+            .neighbors_weighted(b_id, Neighbors::All).ok_or("Unable to get neighbors")?.iter()
             .map(|(target_id, weight)| (b_id, *target_id, *weight))
             .collect();
 
@@ -725,7 +733,7 @@ impl GraphContext {
           (w, (edge_index, node_index))
         })
         .collect::<Vec<_>>();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(|a, b| a.partial_cmp(b).expect("CMP failed"));
     //sort by weight
 
     let limited : Vec<&(&EdgeIndex, &NodeIndex)> =
@@ -764,14 +772,14 @@ impl GraphContext {
       let a_kind = rank.get_node_data(a).unwrap_or(NodeKind::Unknown);
       let b_kind = rank.get_node_data(b).unwrap_or(NodeKind::Unknown);
       if b_kind == NodeKind::Comment || b_kind == NodeKind::Beacon {
-        let w_ab = copy.edge_weight(a, b).unwrap();
-        let w_bc = copy.edge_weight(b, c).unwrap();
+        let w_ab = copy.edge_weight(a, b).ok_or("Unable to get edge weight")?;
+        let w_bc = copy.edge_weight(b, c).ok_or("Unable to get edge weight")?;
 
         // get_transitive_edge_weight
         let w_ac: f64 = w_ab * w_bc * (if w_ab < 0.0f64 && w_bc < 0.0f64 { -1.0f64 } else { 1.0f64 });
         copy.upsert_edge(a, c, w_ac)?;
       } else if a_kind == NodeKind::User {
-        let weight = copy.edge_weight(a, b).unwrap();
+        let weight = copy.edge_weight(a, b).ok_or("Unable to get edge weight")?;
         copy.upsert_edge(a, b, weight)?;
       }
     } else if let Some((&a, &b)) = v3.clone().into_iter().collect_tuple() {
@@ -782,7 +790,7 @@ impl GraphContext {
       edges.append(final_edge)
       */
       // ???
-      let weight = copy.edge_weight(a, b).unwrap();
+      let weight = copy.edge_weight(a, b).ok_or("Unable to get edge weight")?;
       copy.upsert_edge(a, b, weight)?;
     } else if v3.len() == 1 {
       // ego == focus ?
@@ -800,17 +808,18 @@ impl GraphContext {
 
     let (_, edges) = copy.all();
 
-    let table: Vec<(String, String, f64)> =
-      edges
-        .iter()
-        .map(|(n1, n2, weight)| {
-          let name1 = info.node_id_to_name_locked(*n1).unwrap();
-          let name2 = info.node_id_to_name_locked(*n2).unwrap();
-          (name1, name2, *weight)
-        })
-        .collect::<Vec<_>>();
-
-    Ok(table)
+    edges
+      .iter()
+      .map(|(n1, n2, weight)| {
+        match (
+          info.node_id_to_name_locked(*n1),
+          info.node_id_to_name_locked(*n2)
+        ) {
+          (Ok(name1), Ok(name2)) => Ok((name1, name2, *weight)),
+          _                      => Err("No node".into())
+        }
+      })
+      .collect()
   }
 
   fn mr_graph(
@@ -833,7 +842,7 @@ impl GraphContext {
     let (rank, info) = (if self.context.is_empty() {
         &mut graph.graph
       } else {
-        graph.graphs.get_mut(self.context.as_str()).unwrap()
+        graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?
       },
       &mut graph.info);
 
@@ -868,7 +877,7 @@ impl GraphContext {
     let (rank, info) = (if self.context.is_empty() {
         &mut graph.graph
       } else {
-        graph.graphs.get_mut(self.context.as_str()).unwrap()
+        graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?
       },
       &mut graph.info);
 
@@ -887,7 +896,7 @@ impl GraphContext {
     let (rank, info) = (if self.context.is_empty() {
         &mut graph.graph
       } else {
-        graph.graphs.get_mut(self.context.as_str()).unwrap()
+        graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?
       },
       &mut graph.info);
 
@@ -945,7 +954,7 @@ impl GraphContext {
         })
         .filter_map(|res| res.ok())
         .flatten()
-        .collect::<Vec<(NodeId, NodeId, Weight)>>();
+        .collect();
 
     //let (_, edges) = my_graph.all(); // not optimal
     // Note:
@@ -963,8 +972,8 @@ impl GraphContext {
             },
             _ => {}
           }
-          let ego_kind = *node_kinds.get(ego_id).unwrap();
-          let dst_kind = *node_kinds.get(dst_id).unwrap();
+          let ego_kind = *node_kinds.get(ego_id).unwrap_or(&NodeKind::Unknown);
+          let dst_kind = *node_kinds.get(dst_id).unwrap_or(&NodeKind::Unknown);
           return  ego_id != dst_id &&
                   ego_kind == NodeKind::User &&
                  (dst_kind == NodeKind::User || dst_kind == NodeKind::Beacon);
@@ -981,7 +990,7 @@ impl GraphContext {
     let (_rank, info) = (if self.context.is_empty() {
         &mut graph.graph
       } else {
-        graph.graphs.get_mut(self.context.as_str()).unwrap()
+        graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?
       },
       &mut graph.info);
 
@@ -1008,7 +1017,7 @@ impl GraphContext {
     let (rank, info) = (if self.context.is_empty() {
         &mut graph.graph
       } else {
-        graph.graphs.get_mut(self.context.as_str()).unwrap()
+        graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?
       },
       &mut graph.info);
 
@@ -1031,7 +1040,7 @@ impl GraphContext {
     let (rank, info) = (if self.context.is_empty() {
         &mut graph.graph
       } else {
-        graph.graphs.get_mut(self.context.as_str()).unwrap()
+        graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?
       },
       &mut graph.info);
 
@@ -1134,7 +1143,7 @@ impl GraphContext {
       return Err("Can only reset for all contexts".into());
     }
 
-    graph.reset();
+    let _ = graph.reset()?;
 
     return Ok(rmp_serde::to_vec(&"Ok".to_string())?);
   }
