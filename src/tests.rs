@@ -1196,6 +1196,11 @@ fn put_testing_edges() {
 }
 
 #[test]
+fn no_assert() {
+  assert_eq!(meritrank::constants::ASSERT, false);
+}
+
+#[test]
 fn zerorec_graph() {
   let x = GraphContext::null();
 

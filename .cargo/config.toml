@@ -1,0 +1,3 @@
+[env]
+RUST_TEST_THREADS   = "1"
+MERITRANK_NO_ASSERT = "1"

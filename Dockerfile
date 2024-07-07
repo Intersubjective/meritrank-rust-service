@@ -2,7 +2,7 @@ FROM rust:1.75.0-alpine as compile
 RUN apk add cmake make gcc musl-dev
 WORKDIR /usr/project
 COPY . .
-RUN cargo build --release
+RUN MERITRANK_NO_ASSERT=1 cargo build --release
 
 FROM scratch
 EXPOSE 10234
