@@ -9,7 +9,6 @@ mod tests;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use itertools::Itertools;
-use meritrank::{MeritRank, Graph};
 use std::thread;
 use std::time::Duration;
 use std::env::var;
@@ -19,7 +18,7 @@ use std::error::Error;
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use nng::{Aio, AioResult, Context, Message, Protocol, Socket};
 use simple_pagerank::Pagerank;
-use meritrank::{MeritRankError, Weight, NodeId, Neighbors};
+use meritrank::{MeritRank, Graph, IntMap, MeritRankError, Weight, NodeId, Neighbors};
 use ctrlc;
 
 //  ================================================
@@ -51,7 +50,7 @@ pub struct NodesInfo {
   //  Add node type attributes.
 
   node_names : HashMap<String, NodeId>,
-  node_count : u64,
+  node_count : usize,
 }
 
 impl NodesInfo {
@@ -126,7 +125,7 @@ impl GraphSingleton {
       let node_id = self.info.node_count;
       self.info.node_count += 1;
       self.info.node_names.insert(node_name.to_string(), node_id);
-      self.graph.add_node(node_id.into(), kind_from_name(&node_name));
+      self.graph.add_node(node_id, kind_from_name(&node_name));
       node_id
     }
   }
@@ -850,7 +849,7 @@ impl GraphContext {
 
     let result: Vec<(String, String)> =
       rank
-        .neighbors_weighted(node_id, Neighbors::All).unwrap_or(HashMap::new()).iter()
+        .neighbors_weighted(node_id, Neighbors::All).unwrap_or(IntMap::default()).iter()
         .map(|(target_id, _weight)| (
           info.node_id_to_name_locked(node_id).unwrap_or(node_id.to_string()),
           info.node_id_to_name_locked(*target_id).unwrap_or(target_id.to_string())
@@ -1025,7 +1024,7 @@ impl GraphContext {
     for (_, src) in info.node_names.iter() {
       let src_name = info.node_id_to_name_locked(*src)?;
       for (dst, weight) in
-        rank.neighbors_weighted(*src, Neighbors::All).unwrap_or(HashMap::new()).iter() {
+        rank.neighbors_weighted(*src, Neighbors::All).unwrap_or(IntMap::default()).iter() {
         let dst_name = info.node_id_to_name_locked(*dst)?;
         v.push((src_name.clone(), dst_name, *weight));
       }
