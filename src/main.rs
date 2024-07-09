@@ -222,7 +222,6 @@ fn main_sync() -> Result<(), Box<dyn Error + 'static>> {
     let reply: Vec<u8> = process(request);
     let _ = s.send(reply.as_slice()).map_err(|(_, e)| e)?;
   }
-  // Ok(())
 }
 
 fn main_async(threads : usize) -> Result<(), Box<dyn Error + 'static>> {
@@ -432,7 +431,7 @@ impl GraphContext {
     } else if let Ok(("edges", ())) = rmp_serde::from_slice(slice) {
       self.mr_edges()
     } else if let Ok(("users_stats", ego, ())) = rmp_serde::from_slice(slice) {
-      self.mr_users_stats(ego)
+      self.mr_mutual_scores(ego)
     } else if let Ok(("reset", ())) = rmp_serde::from_slice(slice) {
       self.mr_reset()
     } else if let Ok(("zerorec", ())) = rmp_serde::from_slice(slice) {
@@ -512,49 +511,50 @@ impl GraphContext {
       }
     };
 
-    let intermediate = ranks
-      .into_iter()
-      .map(|(n, w)| {
-        (
-          ego,
-          n,
-          rank.get_node_data(n).unwrap_or(NodeKind::Unknown),
-          w,
+    let mut intermediate : Vec<(NodeId, NodeKind, Weight)> =
+      ranks
+        .into_iter()
+        .map(|(n, w)| {
+          (
+            n,
+            rank.get_node_data(n).unwrap_or(NodeKind::Unknown),
+            w,
+          )
+        })
+        .filter(|(_, target_kind, _)| {
+          match kind {
+            NodeKind::Unknown => true,
+            _                 => kind == *target_kind,
+          }
+        })
+        .filter(|(_, _, score)| score_gt < *score || (score_gte && score_gt == *score))
+        .filter(|(_, _, score)| *score < score_lt || (score_lte && score_lt == *score))
+        .filter(|(target_id, target_kind, _)|
+          if hide_personal {
+            !((*target_kind == NodeKind::Comment || *target_kind == NodeKind::Beacon) &&
+              rank.get_edge(*target_id, node_id).is_some())
+          } else {
+            true
+          }
         )
-      })
-      .filter(|(_, _, target_kind, _)| {
-        match kind {
-          NodeKind::Unknown => true,
-          _                 => kind == *target_kind,
-        }
-      })
-      .filter(|(_, _, _, score)| score_gt < *score || (score_gte && score_gt == *score))
-      .filter(|(_, _, _, score)| *score < score_lt || (score_lte && score_lt == *score));
-
-    let result = intermediate
-      .filter(|(_ego, target_id, target_kind, _)|
-        if hide_personal {
-          !((*target_kind == NodeKind::Comment || *target_kind == NodeKind::Beacon) &&
-            rank.get_edge(*target_id, node_id).is_some())
-        } else {
-          true
-        }
-      )
-      .map(|(ego, target_id, _, weight)| {
-        match info.node_id_to_name_locked(target_id) {
-          Ok(x)  => Ok((ego, x, weight)),
-          Err(x) => Err(x)
-        }
-      });
-
-    let page : Result<Vec<(&str, String, Weight)>, _> =
-      result
-        .skip(index as usize)
-        .take(count as usize)
         .collect();
 
-    let v: Vec<u8> = rmp_serde::to_vec(&page?)?;
-    Ok(v)
+    intermediate.sort_by(|(_, _, a), (_, _, b)| a.total_cmp(b));
+
+    let page : Result<Vec<(&str, String, Weight)>, _> =
+      intermediate
+        .iter()
+        .skip(index as usize)
+        .take(count as usize)
+        .map(|(target_id, _, weight)| {
+          match info.node_id_to_name_locked(*target_id) {
+            Ok(x)  => Ok((ego, x, *weight)),
+            Err(x) => Err(x)
+          }
+        })
+        .collect();
+
+    Ok(rmp_serde::to_vec(&page?)?)
   }
 
   fn set_edge_locked(
@@ -679,9 +679,6 @@ impl GraphContext {
           w_ab
         )?;
       } else if b_kind == NodeKind::Comment || b_kind == NodeKind::Beacon {
-        // ? # For connections user-> comment | beacon -> user,
-        // ? # convolve those into user->user
-
         let v_b : Vec<(NodeId, NodeId, Weight)> =
           rank
             .neighbors_weighted(b_id, Neighbors::All).ok_or("Unable to get neighbors")?.iter()
@@ -692,7 +689,7 @@ impl GraphContext {
           if positive_only && w_bc <= 0.0f64 {
             continue;
           }
-          if c_id == a_id || c_id == b_id { // note: c_id==b_id not in Python version !?
+          if c_id == a_id || c_id == b_id {
             continue;
           }
 
@@ -702,12 +699,6 @@ impl GraphContext {
             continue;
           }
 
-          // let w_ac = self.get_transitive_edge_weight(a, b, c);
-          // TODO: proper handling of negative edges
-          // Note that enemy of my enemy is not my friend.
-          // Thougnh, this is pretty irrelevant for our current case
-          // where comments can't have outgoing negative edges.
-          // return w_ab * w_bc * (-1 if w_ab < 0 and w_bc < 0 else 1)
           let w_ac = w_ab * w_bc * (if w_ab < 0.0f64 && w_bc < 0.0f64 { -1.0f64 } else { 1.0f64 });
           let _ = copy.upsert_edge_with_nodes(
             a_id, NodeKind::Unknown,
@@ -718,41 +709,40 @@ impl GraphContext {
       }
     }
 
-    // self.remove_outgoing_edges_upto_limit(G, ego, focus, limit or 3):
-    // neighbours = list(dest for src, dest in G.out_edges(focus))
-
-    let neighbours : Vec<(EdgeIndex, NodeIndex, NodeId)> = copy.outgoing(focus_id);
+    let neighbors : Vec<(EdgeIndex, NodeIndex, NodeId)> = copy.outgoing(focus_id);
     let ego_id = info.node_name_to_id_locked(ego)?;
 
-    let mut sorted: Vec<(Weight, (&EdgeIndex, &NodeIndex))> =
-      neighbours
-        .iter()
-        .map(|(edge_index, node_index, node_id)| {
-          let w: f64 = rank.get_node_score(ego_id, *node_id).unwrap_or(0f64);
-          (w, (edge_index, node_index))
-        })
-        .collect::<Vec<_>>();
-    sorted.sort_by(|a, b| a.partial_cmp(b).expect("CMP failed"));
-    //sort by weight
+    let mut sorted = Vec::<(Weight, (EdgeIndex, NodeIndex))>::new();
+    sorted.reserve_exact(neighbors.len());
 
-    let limited : Vec<&(&EdgeIndex, &NodeIndex)> =
+    for (edge_index, node_index, node_id) in neighbors {
+      let weight = match rank.get_node_score(ego_id, node_id) {
+        Ok(x) => x,
+        _     => {
+          assert!(false);
+          let _ = rank.calculate(ego_id, *NUM_WALK)?;
+          rank.get_node_score(ego_id, node_id)?
+        }
+      };
+      sorted.push((weight, (edge_index, node_index)));
+    }
+
+    sorted.sort_by(|(a, _), (b, _)| a.total_cmp(b));
+
+    let limited : Vec<(EdgeIndex, NodeIndex)> =
       sorted.iter()
-        .map(|(_, tuple)| tuple)
+        .map(|(_, tuple)| *tuple)
         .collect();
 
     for (_edge_index, node_index) in limited {
-      let node_id = copy.index2node(**node_index);
+      let node_id = copy.index2node(node_index);
       copy.remove_edge(ego_id, node_id);
-      //G.remove_node(dest) // ???
     }
 
-    // add_path_to_graph(G, ego, focus)
     let path: Vec<NodeId> =
       copy
         .shortest_path(ego_id, focus_id)
         .unwrap_or(Vec::new());
-    // add_path_to_graph(G, ego, focus)
-    // Note: no loops or "self edges" are expected in the path
 
     let v3 : Vec<&NodeId> =
       path
@@ -760,21 +750,13 @@ impl GraphContext {
         .collect::<Vec<&NodeId>>(); // was: (3)
 
     if let Some((&a, &b, &c)) = v3.clone().into_iter().collect_tuple() {
-      // # merge transitive edges going through comments and beacons
-
-      // ???
-      /*
-      if c is None and not (a.startswith("C") or a.startswith("B")):
-        new_edge = (a, b, self.get_edge(a, b))
-      elif ... */
-
       let a_kind = rank.get_node_data(a).unwrap_or(NodeKind::Unknown);
       let b_kind = rank.get_node_data(b).unwrap_or(NodeKind::Unknown);
+
       if b_kind == NodeKind::Comment || b_kind == NodeKind::Beacon {
         let w_ab = copy.edge_weight(a, b).ok_or("Unable to get edge weight")?;
         let w_bc = copy.edge_weight(b, c).ok_or("Unable to get edge weight")?;
 
-        // get_transitive_edge_weight
         let w_ac: f64 = w_ab * w_bc * (if w_ab < 0.0f64 && w_bc < 0.0f64 { -1.0f64 } else { 1.0f64 });
         copy.upsert_edge(a, c, w_ac)?;
       } else if a_kind == NodeKind::User {
@@ -782,28 +764,14 @@ impl GraphContext {
         copy.upsert_edge(a, b, weight)?;
       }
     } else if let Some((&a, &b)) = v3.clone().into_iter().collect_tuple() {
-      /*
-      # Add the final (and only)
-      final_nodes = ego_to_focus_path[-2:]
-      final_edge = (*final_nodes, self.get_edge(*final_nodes))
-      edges.append(final_edge)
-      */
-      // ???
       let weight = copy.edge_weight(a, b).ok_or("Unable to get edge weight")?;
       copy.upsert_edge(a, b, weight)?;
     } else if v3.len() == 1 {
-      // ego == focus ?
-      // do nothing
     } else if v3.is_empty() {
-      // No path found, so add just the focus node to show at least something
-      //let node = mrgraph::meritrank::node::Node::new(focus_id);
       copy.add_node(focus_id, NodeKind::Unknown);
     } else {
       return Err("Gravity graph failure".into());
     }
-
-    // self.remove_self_edges(copy);
-    // todo: just not let them pass into the graph
 
     let (_, edges) = copy.all();
 
@@ -1033,7 +1001,7 @@ impl GraphContext {
     Ok(rmp_serde::to_vec(&v)?)
   }
 
-  fn mr_users_stats(&self, ego : &str) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
+  fn mr_mutual_scores(&self, ego : &str) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
     let graph = &mut *GRAPH.lock()?;
 
     let (rank, info) = (if self.context.is_empty() {

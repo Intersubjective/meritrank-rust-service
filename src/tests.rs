@@ -1202,6 +1202,8 @@ fn no_assert() {
 
 #[test]
 fn zerorec_graph() {
+  let _ = GraphContext::null().mr_reset().unwrap();
+
   let x = GraphContext::null();
 
   put_testing_edges();
@@ -1212,13 +1214,14 @@ fn zerorec_graph() {
 
   let n = res.len();
 
-  assert!(n > 25 && n < 60);
-
-  let _ = x.mr_reset().unwrap();
+  assert!(n > 25);
+  assert!(n < 60);
 }
 
 #[test]
 fn zerorec_graph_positive_only() {
+  let _ = GraphContext::null().mr_reset().unwrap();
+
   let x = GraphContext::null();
 
   put_testing_edges();
@@ -1229,9 +1232,27 @@ fn zerorec_graph_positive_only() {
 
   let n = res.len();
 
-  assert!(n > 25 && n < 60);
+  assert!(n > 25);
+  assert!(n < 60);
+}
 
-  let _ = x.mr_reset().unwrap();
+#[test]
+fn zerorec_graph_focus_beacon() {
+  let _ = GraphContext::null().mr_reset().unwrap();
+
+  let x = GraphContext::null();
+
+  put_testing_edges();
+
+  let _ = x.mr_zerorec().unwrap();
+
+  let res = x.gravity_graph("Uadeb43da4abb", "B8a531802473b", true).unwrap();
+
+  let n = res.len();
+
+//  assert_eq!(n, 0); // TEMP
+  assert!(n > 25);
+  assert!(n < 60);
 }
 
 //  In null context, edge weight is always a sum of all contexts.
@@ -1239,6 +1260,8 @@ fn zerorec_graph_positive_only() {
 
 #[test]
 fn null_context_is_sum() {
+  let _ = GraphContext::null().mr_reset().unwrap();
+
   let x = GraphContext::new("X");
   let y = GraphContext::new("Y");
 
@@ -1255,12 +1278,12 @@ fn null_context_is_sum() {
   ];
 
   assert_eq!(edges, edges_expected);
-
-  let _ = GraphContext::null().mr_reset().unwrap();
 }
 
 #[test]
 fn delete_contexted_edge() {
+  let _ = GraphContext::null().mr_reset().unwrap();
+  
   let x = GraphContext::new("X");
   let y = GraphContext::new("Y");
 
@@ -1278,12 +1301,12 @@ fn delete_contexted_edge() {
   ];
 
   assert_eq!(edges, edges_expected);
-
-  let _ = GraphContext::null().mr_reset().unwrap();
 }
 
 #[test]
 fn null_context_invariant() {
+  let _ = GraphContext::null().mr_reset().unwrap();
+
   let x = GraphContext::new("X");
   let y = GraphContext::new("Y");
 
@@ -1302,12 +1325,12 @@ fn null_context_invariant() {
   ];
 
   assert_eq!(edges, edges_expected);
-
-  let _ = GraphContext::null().mr_reset().unwrap();
 }
 
 #[test]
 fn scores() {
+  let _ = GraphContext::null().mr_reset().unwrap();
+
   let x = GraphContext::new("X");
 
   let _ = x.mr_put_edge("U1", "U2", 2.0).unwrap();
@@ -1338,6 +1361,8 @@ fn scores() {
 
 #[test]
 fn scores_unknown_context() {
+  let _ = GraphContext::null().mr_reset().unwrap();
+
   let x = GraphContext::new("X");
   let y = GraphContext::new("Y");
 
@@ -1351,7 +1376,9 @@ fn scores_unknown_context() {
 }
 
 #[test]
-fn users_stats() {
+fn mutual_scores() {
+  let _ = GraphContext::null().mr_reset().unwrap();
+
   let x = GraphContext::new("");
 
   let _ = x.mr_put_edge("U1", "U2", 3.0).unwrap();
@@ -1361,7 +1388,7 @@ fn users_stats() {
   let _ = x.mr_put_edge("U3", "U1", 3.0).unwrap();
   let _ = x.mr_put_edge("U3", "U2", 2.0).unwrap();
 
-  let res_bytes = x.mr_users_stats("U1").unwrap();
+  let res_bytes = x.mr_mutual_scores("U1").unwrap();
 
   let res : Vec<(String, Weight, Weight)> = rmp_serde::from_slice(res_bytes.as_slice()).unwrap();
 
