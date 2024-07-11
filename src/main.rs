@@ -1,166 +1,47 @@
-//  FIXME
-//  Floating-point arithmetic for weight calculation will
-//  break invariance.
+//  ================================================================
 //
+//    Modules and dependencies
+//
+//  ================================================================
 
 #[cfg(test)]
 mod tests;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::ops::DerefMut;
 use itertools::Itertools;
 use std::thread;
 use std::time::Duration;
 use std::env::var;
 use std::string::ToString;
-use std::sync::MutexGuard;
 use std::error::Error;
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use nng::{Aio, AioResult, Context, Message, Protocol, Socket};
 use simple_pagerank::Pagerank;
-use meritrank::{MeritRank, Graph, IntMap, MeritRankError, Weight, NodeId, Neighbors};
+use meritrank::{MeritRank, Graph, IntMap, Weight, NodeId, Neighbors};
 use ctrlc;
+use chrono;
 
-//  ================================================
+//  ================================================================
 //
-//    ...Previously called mrgraph
+//    Global options
 //
-//  ================================================
+//  ================================================================
+
+pub static ERROR   : bool = true;
+pub static WARNING : bool = true;
+pub static INFO    : bool = true;
+pub static VERBOSE : bool = true;
+pub static TRACE   : bool = true;
+
+const VERSION : &str = match option_env!("CARGO_PKG_VERSION") {
+  Some(x) => x,
+  None    => "dev",
+};
 
 lazy_static::lazy_static! {
-  //  FIXME
-  //  Use local object instead of a singleton.
-  pub static ref GRAPH : Arc<Mutex<GraphSingleton>> =
-    Arc::new(Mutex::new(GraphSingleton::new()
-      .expect("Unable to create graph singleton")));
-}
-
-#[derive(PartialEq, Eq, Clone, Copy, Default)]
-pub enum NodeKind {
-  #[default]
-  Unknown,
-  User,
-  Beacon,
-  Comment,
-}
-
-pub struct NodesInfo {
-  //  FIXME(Performance)
-  //  Use parallel array of node names for O(0) lookup.
-  //  Add node type attributes.
-
-  node_names : HashMap<String, NodeId>,
-  node_count : usize,
-}
-
-impl NodesInfo {
-  pub fn new() -> NodesInfo {
-    NodesInfo {
-      node_names : HashMap::new(),
-      node_count : 0,
-    }
-  }
-
-  pub fn node_name_to_id_locked(&self, node_name: &str) -> Result<NodeId, Box<dyn Error + 'static>> {
-    match self.node_names.get(node_name) {
-      Some(x) => Ok(*x),
-      _       => Err("Node doesn't exist".into())
-    }
-  }
-
-  pub fn node_id_to_name_locked(&self, node_id: NodeId) -> Result<String, Box<dyn Error + 'static>> {
-    for (name, id) in self.node_names.iter() {
-      if *id == node_id {
-        return Ok(name.to_string());
-      }
-    }
-    Err("Node not found".into())
-  }
-}
-
-pub struct GraphSingleton {
-  pub graph  : MeritRank<NodeKind>,                  // null-context
-  pub graphs : HashMap<String, MeritRank<NodeKind>>, // contexted
-  pub info   : NodesInfo,
-}
-
-fn kind_from_name(name : &str) -> NodeKind {
-  match name.chars().nth(0) {
-    Some('U') => NodeKind::User,
-    Some('B') => NodeKind::Beacon,
-    Some('C') => NodeKind::Comment,
-    _         => NodeKind::Unknown,
-  }
-}
-
-impl GraphSingleton {
-  /// Constructor
-  pub fn new() -> Result<GraphSingleton, Box<dyn Error + 'static>> {
-    Ok(GraphSingleton {
-      graph  : MeritRank::new(Graph::<NodeKind>::new())?,
-      graphs : HashMap::new(),
-      info   : NodesInfo::new(),
-    })
-  }
-
-  pub fn reset(&mut self) -> Result<(), Box<dyn Error + 'static>> {
-    self.graph  = MeritRank::new(Graph::new())?;
-    self.graphs = HashMap::new();
-    self.info   = NodesInfo::new();
-    Ok(())
-  }
-
-  pub fn contexts() -> Result<Vec<String>, Box<dyn Error + 'static>> {
-    Ok(GRAPH.lock()?.graphs.keys().map(|ctx| ctx.clone()).collect_vec())
-  }
-
-  pub fn add_node(node_name : &str) -> Result<NodeId, Box<dyn Error + 'static>> {
-    Ok(GRAPH.lock()?.add_node_id(node_name))
-  }
-
-  pub fn add_node_id(&mut self, node_name : &str) -> NodeId {
-    if let Some(&n) = self.info.node_names.get(node_name) {
-      n
-    } else {
-      let node_id = self.info.node_count;
-      self.info.node_count += 1;
-      self.info.node_names.insert(node_name.to_string(), node_id);
-      self.graph.add_node(node_id, kind_from_name(&node_name));
-      node_id
-    }
-  }
-
-  pub fn add_node_id_contexted(&mut self, context : &str, node_name : &str) -> Result<NodeId, Box<dyn Error + 'static>> {
-    if let Some(&n) = self.info.node_names.get(node_name) {
-      Ok(n)
-    } else {
-      let node_id = self.add_node_id(node_name); // create a node in null-context
-      if !self.graphs.contains_key(context) {
-        self.graphs.insert(context.to_string(), MeritRank::new(Graph::new())?);
-      }
-      let graph = self.graphs.get_mut(context).ok_or("No context")?;
-      graph.add_node(node_id.into(), kind_from_name(&node_name));
-      Ok(node_id)
-    }
-  }
-
-  pub fn node_name_to_id(node_name: &str) -> Result<NodeId, Box<dyn Error + 'static>> {
-    Ok(GRAPH.lock()?.info.node_name_to_id_locked(node_name)?)
-  }
-
-  pub fn node_id_to_name(node_id: NodeId) -> Result<String, Box<dyn Error + 'static>> {
-    Ok(GRAPH.lock()?.info.node_id_to_name_locked(node_id)?)
-  }
-}
-
-//  ================================================
-//
-//  The service
-//
-//  ================================================
-
-lazy_static::lazy_static! {
-  static ref SERVICE_URL: String =
+  static ref SERVICE_URL : String =
     var("MERITRANK_SERVICE_URL")
       .unwrap_or("tcp://127.0.0.1:10234".to_string());
 
@@ -170,17 +51,17 @@ lazy_static::lazy_static! {
       .and_then(|s| s.parse::<usize>().ok())
       .unwrap_or(1);
 
-  static ref NUM_WALK: usize =
+  static ref NUM_WALK : usize =
     var("MERITRANK_NUM_WALK")
       .ok()
       .and_then(|s| s.parse::<usize>().ok())
       .unwrap_or(10000);
 
-  static ref ZERO_NODE: String =
+  static ref ZERO_NODE : String =
     var("MERITRANK_ZERO_NODE")
       .unwrap_or("U000000000000".to_string());
 
-  static ref TOP_NODES_LIMIT: usize =
+  static ref TOP_NODES_LIMIT : usize =
     var("MERITRANK_TOP_NODES_LIMIT")
       .ok()
       .and_then(|s| s.parse::<usize>().ok())
@@ -192,272 +73,413 @@ lazy_static::lazy_static! {
   };
 }
 
-const VERSION : &str = match option_env!("CARGO_PKG_VERSION") {
-  Some(x) => x,
-  None    => "dev",
-};
+//  ================================================================
+//
+//    Basic declarations
+//
+//  ================================================================
 
-fn main() -> Result<(), Box<dyn Error + 'static>> {
-  ctrlc::set_handler(move || {
-    println!("");
-    std::process::exit(0)
-  })?;
+#[derive(PartialEq, Eq, Clone, Copy, Default)]
+pub enum NodeKind {
+  #[default]
+  Unknown,
+  User,
+  Beacon,
+  Comment,
+}
 
-  if *THREADS > 1 {
-    main_async(*THREADS)
-  } else {
-    main_sync()
+#[derive(PartialEq, Eq, Clone, Default)]
+pub struct NodeInfo {
+  pub kind : NodeKind,
+  pub name : String,
+}
+
+//  Augmented multi-context graph
+//
+pub struct AugMultiGraph {
+  pub node_count : usize,
+  pub node_infos : Vec<NodeInfo>,
+  pub node_ids   : HashMap<String, NodeId>,
+  pub contexts   : HashMap<String, MeritRank<()>>,
+}
+
+//  ================================================================
+//
+//    Utils
+//
+//  ================================================================
+
+static LOG_MUTEX : Mutex<()> = Mutex::new(());
+
+fn log_with_time(prefix : &str, message : &str) {
+  match LOG_MUTEX.lock() {
+    Ok(_) => {
+      println!("{:?}  {}{}", chrono::offset::Local::now(), prefix, message);
+    },
+    _ => {
+      println!("{:?}  LOG MUTEX FAILED", chrono::offset::Local::now());
+    },
+  };
+}
+
+
+macro_rules! log_error {
+  ($($arg:expr),*) => {
+    if ERROR {
+      log_with_time("ERROR   ", format!($($arg),*).as_str());
+    }
+  };
+}
+
+macro_rules! log_warning {
+  ($($arg:expr),*) => {
+    if WARNING {
+      log_with_time("WARNING ", format!($($arg),*).as_str());
+    }
+  };
+}
+
+macro_rules! log_info {
+  ($($arg:expr),*) => {
+    if INFO {
+      log_with_time("INFO    ", format!($($arg),*).as_str());
+    }
+  };
+}
+
+macro_rules! log_verbose {
+  ($($arg:expr),*) => {
+    if VERBOSE {
+      log_with_time("VERBOSE --- ", format!($($arg),*).as_str());
+    }
+  };
+}
+
+macro_rules! log_trace {
+  ($($arg:expr),*) => {
+    if TRACE {
+      log_with_time("TRACE   --- --- ", format!($($arg),*).as_str());
+    }
+  };
+}
+
+fn kind_from_name(name : &str) -> NodeKind {
+  log_verbose!("kind_from_name");
+
+  match name.chars().nth(0) {
+    Some('U') => NodeKind::User,
+    Some('B') => NodeKind::Beacon,
+    Some('C') => NodeKind::Comment,
+    _         => NodeKind::Unknown,
   }
 }
 
-fn main_sync() -> Result<(), Box<dyn Error + 'static>> {
-  println!("Starting server {} at {}", VERSION, *SERVICE_URL);
-  println!("NUM_WALK={}", *NUM_WALK);
+impl AugMultiGraph {
+  pub fn new() -> Result<AugMultiGraph, Box<dyn Error + 'static>> {
+    log_verbose!("AugMultiGraph::new");
 
-  let s = Socket::new(Protocol::Rep0)?;
-  s.listen(&SERVICE_URL)?;
-
-  loop {
-    let request: Message = s.recv()?;
-    let reply: Vec<u8> = process(request);
-    let _ = s.send(reply.as_slice()).map_err(|(_, e)| e)?;
-  }
-}
-
-fn main_async(threads : usize) -> Result<(), Box<dyn Error + 'static>> {
-  println!("Starting server {} at {}, {} threads", VERSION, *SERVICE_URL, threads);
-  println!("NUM_WALK={}", *NUM_WALK);
-
-  let s = Socket::new(Protocol::Rep0)?;
-
-  // Create all of the worker contexts
-  let workers: Vec<_> = (0..threads)
-    .map(|_| {
-      let ctx = Context::new(&s)?;
-      let ctx_clone = ctx.clone();
-      let aio = Aio::new(move |aio, res| worker_callback(aio, &ctx_clone, res))?;
-      Ok((aio, ctx))
+    Ok(AugMultiGraph {
+      node_count   : 0,
+      node_infos   : Vec::new(),
+      node_ids     : HashMap::new(),
+      contexts     : HashMap::new(),
     })
-    .collect::<Result<_, nng::Error>>()?;
-
-  // Only after we have the workers do we start listening.
-  s.listen(&SERVICE_URL)?;
-
-  // Now start all of the workers listening.
-  for (a, c) in &workers {
-    c.recv(a)?;
   }
 
-  thread::sleep(Duration::from_secs(60 * 60 * 24 * 365)); // 1 year
+  fn reset(&mut self) -> Result<(), Box<dyn Error + 'static>> {
+    log_verbose!("reset");
 
-  Ok(())
-}
+    self.node_count   = 0;
+    self.node_infos   = Vec::new();
+    self.node_ids     = HashMap::new();
+    self.contexts     = HashMap::new();
 
-/// Callback function for workers.
-fn worker_callback(aio: Aio, ctx: &Context, res: AioResult) {
-  match res {
-    // We successfully sent the message, wait for a new one.
-    AioResult::Send(Ok(_)) => ctx.recv(&aio).expect("RECV failed"),
+    Ok(())
+  }
 
-    // We successfully received a message.
-    AioResult::Recv(Ok(req)) => {
-      let msg: Vec<u8> = process(req);
-      ctx.send(&aio, msg.as_slice()).expect("SEND failed");
+  fn node_id_from_name(&self, node_name : &str) -> Result<NodeId, Box<dyn Error + 'static>> {
+    log_verbose!("node_id_from_name");
+
+    match self.node_ids.get(node_name) {
+      Some(x) => Ok(*x),
+      _       => {
+        log_error!("(AugMultiGraph::node_id_from_name) Node does not exist: `{}`", node_name);
+        Err("Node does not exist".into())
+      },
+    }
+  }
+
+  fn node_info_from_id(&self, node_id : NodeId) -> Result<&NodeInfo, Box<dyn Error + 'static>> {
+    log_verbose!("node_info_from_id");
+
+    match self.node_infos.get(node_id) {
+      Some(x) => Ok(x),
+      _       => {
+        log_error!("(AugMultiGraph::node_info_from_id) Node does not exist: `{}`", node_id);
+        Err("Node does not exist".into())
+      },
+    }
+  }
+
+  fn find_or_add_node_by_name(
+    &mut self,
+    context   : &str,
+    node_name : &str
+  ) -> Result<NodeId, Box<dyn Error + 'static>> {
+    log_verbose!("find_or_add_node_by_name");
+
+    if let Some(&node_id) = self.node_ids.get(node_name) {
+      Ok(node_id)
+    } else {
+      let node_id = self.node_count;
+      self.node_count += 1;
+      self.node_infos.resize(self.node_count, NodeInfo::default());
+      self.node_infos[node_id] = NodeInfo {
+        kind : kind_from_name(&node_name),
+        name : node_name.to_string(),
+      };
+      self.node_ids.insert(node_name.to_string(), node_id);
+
+      if !context.is_empty() {
+        self.add_context_if_does_not_exist("")?;
+
+        log_trace!("add node in NULL: {}", node_id);
+        self.mut_graph_from_context("")?.add_node(node_id, ());
+      }
+      
+      self.add_context_if_does_not_exist(context)?;
+      
+      log_trace!("add node in {}: {}", context, node_id);
+      self.mut_graph_from_context(context)?.add_node(node_id, ());
+
+      Ok(node_id)
+    }
+  }
+
+  fn add_context_if_does_not_exist(&mut self, context : &str) -> Result<(), Box<dyn Error + 'static>> {
+    log_verbose!("add_context_if_does_not_exist");
+
+    if !self.contexts.contains_key(context) {
+      self.contexts.insert(context.to_string(), MeritRank::new(Graph::new())?);
+    }
+    Ok(())
+  }
+
+  fn mut_graph_from_context(&mut self, context : &str) -> Result<&mut MeritRank<()>, Box<dyn Error + 'static>> {
+    log_verbose!("mut_graph_from_context");
+
+    match self.contexts.get_mut(context) {
+      Some(graph) => Ok(graph),
+      None        => {
+        log_error!("(mut_graph_from_context) Context does not exist: {}", context);
+        Err("Context does not exist".into())
+      },
+    }
+  }
+
+  fn set_edge(
+    &mut self,
+    context : &str,
+    src     : NodeId,
+    dst     : NodeId,
+    amount  : f64
+  ) -> Result<(), Box<dyn Error + 'static>> {
+    log_verbose!("set_edge");
+
+    if context.is_empty() {
+      self.add_context_if_does_not_exist("")?;
+      log_trace!("add edge in NULL: {} -> {} for {}", src, dst, amount);
+      self.mut_graph_from_context("")?.add_edge(src, dst, amount);
+    } else {
+      self.add_context_if_does_not_exist("")?;
+      self.add_context_if_does_not_exist(context)?;
+
+      //  This doesn't make any sense but it's Rust.
+
+      let null_weight = self.mut_graph_from_context("")?     .get_edge(src, dst).unwrap_or(0.0);
+      let old_weight  = self.mut_graph_from_context(context)?.get_edge(src, dst).unwrap_or(0.0);
+      let delta       = null_weight + amount - old_weight;
+
+      log_trace!("add edge in NULL: {} -> {} for {}", src, dst, delta);
+      self.mut_graph_from_context("")?.add_edge(src, dst, delta);
+
+      log_trace!("add edge in {}: {} -> {} for {}", context, src, dst, amount);
+      self.mut_graph_from_context(context)?.add_edge(src, dst, amount);
     }
 
-    AioResult::Sleep(_) => {},
+    Ok(())
+  }
 
-    // Anything else is an error and we will just panic.
-    AioResult::Send(Err(e)) =>
-      panic!("Error: {}", e.1),
+  fn connected_nodes(
+    &mut self,
+    context   : &str,
+    ego       : NodeId
+  ) -> Result<
+    Vec<(NodeId, NodeId)>,
+    Box<dyn Error + 'static>
+  > {
+    log_verbose!("connected_nodes");
 
-    AioResult::Recv(Err(e)) =>
-      panic!("Error: {}", e)
+    let edge_ids : Vec<(NodeId, NodeId)> =
+      self.mut_graph_from_context(context)?
+        .neighbors_weighted(ego, Neighbors::All).ok_or("Node does not exist")?.iter()
+        .map(|(dst_id, _weight)| (
+          ego,
+          *dst_id
+        ))
+        .collect();
+
+    Ok(edge_ids)
+  }
+
+  fn connected_node_names(
+    &mut self,
+    context   : &str,
+    ego       : &str
+  ) -> Result<
+    Vec<(&str, &str)>,
+    Box<dyn Error + 'static>
+  > {
+    log_verbose!("connected_node_names");
+
+    let src_id = self.node_id_from_name(ego)?;
+
+    let edge_ids = self.connected_nodes(context, src_id)?;
+
+    let res : Result<Vec<(&str, &str)>, Box<dyn Error + 'static>> =
+      edge_ids
+        .into_iter()
+        .map(|(src_id, dst_id)| Ok((
+          self.node_info_from_id(src_id)?.name.as_str(),
+          self.node_info_from_id(dst_id)?.name.as_str()
+        )))
+        .collect();
+
+    Ok(res?)
+  }
+  
+  fn recalculate_all(&mut self, num_walk : usize) -> Result<(), Box<dyn Error + 'static>> {
+    log_verbose!("recalculate_all");
+
+    let infos = self.node_infos.clone();
+    let graph = self.mut_graph_from_context("")?;
+
+    for id in 0..infos.len() {
+      if infos[id].kind == NodeKind::User {
+        graph.calculate(id, num_walk)?;
+      }
+    }
+
+    Ok(())
   }
 }
 
-fn process(req: Message) -> Vec<u8> {
-  let slice = req.as_slice();
+//  ================================================
+//
+//    Commands
+//
+//  ================================================
 
-  let ctx = GraphContext::null();
+fn read_version() -> Result<Vec<u8>, Box<dyn Error + 'static>> {
+  log_info!("CMD read_version");
 
-  ctx.process(slice)
-    .map(|msg| msg)
-    .unwrap_or_else(|e| {
-      let s : String = e.to_string();
-      rmp_serde::to_vec(&s).expect("Unable to serialize error string")
-    })
-}
-
-fn mr_service() -> Result<Vec<u8>, Box<dyn Error + 'static>> {
   let s : String = VERSION.to_string();
   Ok(rmp_serde::to_vec(&s)?)
 }
 
-fn mr_node_score_null(ego : &str, target : &str) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-  let mut graph = GRAPH.lock()?;
+impl AugMultiGraph {
+  fn read_node_score_null(&mut self, ego : &str, target : &str) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
+    log_info!("CMD read_node_score_null");
 
-  let ego_id    = graph.info.node_name_to_id_locked(ego)?;
-  let target_id = graph.info.node_name_to_id_locked(target)?;
+    let ego_id    = self.node_id_from_name(ego)?;
+    let target_id = self.node_id_from_name(target)?;
 
-  let mut w : Weight = 0.0;
-  for (_, rank) in graph.graphs.iter_mut() {
-    w += match rank.get_node_score(ego_id, target_id) {
-      Ok(x) => x,
-      _     => {
-        let _ = rank.calculate(ego_id, *NUM_WALK)?;
-        rank.get_node_score(ego_id, target_id)?
+    let mut w : Weight = 0.0;
+    for (_, rank) in self.contexts.iter_mut() {
+      w += match rank.get_node_score(ego_id, target_id) {
+        Ok(x) => x,
+        _     => {
+          let _ = rank.calculate(ego_id, *NUM_WALK)?;
+          rank.get_node_score(ego_id, target_id)?
+        }
       }
     }
+
+    let result : Vec<(&str, &str, f64)> = [(ego, target, w)].to_vec();
+    Ok(rmp_serde::to_vec(&result)?)
   }
 
-  let result : Vec<(&str, &str, f64)> = [(ego, target, w)].to_vec();
-  Ok(rmp_serde::to_vec(&result)?)
-}
+  fn read_scores_null(&mut self, ego : &str) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
+    log_info!("CMD read_scores_null");
 
-fn mr_scores_null(ego : &str) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-  let  graph         =  &mut *GRAPH.lock()?;
-  let (graphs, info) = (&mut graph.graphs, &mut graph.info);
+    let ego_id = self.node_id_from_name(ego)?;
 
-  let ego_id = info.node_name_to_id_locked(ego)?;
-
-  let result: Vec<_> =
-    graphs
-      .iter_mut()
-      .filter_map(|(_context, rank)| {
-        let rank_result = match rank.get_ranks(ego_id, None) {
-          Ok(x) => x,
-          _     => {
-            let _ = rank.calculate(ego_id, *NUM_WALK).ok()?;
-            rank.get_ranks(ego_id, None).ok()?
+    let intermediate : Vec<(&str, NodeId, Weight)> =
+      self.contexts
+        .iter_mut()
+        .filter_map(|(context, rank)| {
+          if context.is_empty() {
+            return None;
           }
-        };
-        let rows : Vec<_> =
-          rank_result
-            .into_iter()
-            .map(|(n, s)| {
-              (
-                (
-                  ego,
-                  info.node_id_to_name_locked(n)
-                    .unwrap_or(n.to_string())
-                ),
-                s,
-              )
-            })
-            .collect();
-        Some(rows)
-      })
-      .flatten()
-      .into_iter()
-      .group_by(|(nodes, _)| nodes.clone())
-      .into_iter()
-      .map(|((src, target), rows)|
-        (src, target, rows.map(|(_, score)| score).sum::<Weight>())
-      )
-      .collect();
+          let rank_result = match rank.get_ranks(ego_id, None) {
+            Ok(x) => x,
+            _     => {
+              let _ = rank.calculate(ego_id, *NUM_WALK).ok()?;
+              rank.get_ranks(ego_id, None).ok()?
+            }
+          };
+          let rows : Vec<_> =
+            rank_result
+              .into_iter()
+              .map(|(node, score)| {
+                ((ego, node), score)
+              })
+              .collect();
+          Some(rows)
+        })
+        .flatten()
+        .into_iter()
+        .group_by(|(nodes, _)| nodes.clone())
+        .into_iter()
+        .map(|((src, dst), rows)|
+          (src, dst, rows.map(|(_, score)| score).sum::<Weight>())
+        )
+        .collect();
 
-  let v: Vec<u8> = rmp_serde::to_vec(&result)?;
-  Ok(v)
-}
+    let result : Result<Vec<(&str, &str, Weight)>, _> =
+      intermediate
+        .iter()
+        .map(|(ego, node, weight)|
+          match self.node_info_from_id(*node) {
+            Ok(info) => Ok((*ego, info.name.as_str(), *weight)),
+            Err(x)   => Err(x)
+          }
+        )
+        .collect();
 
-pub struct GraphContext {
-  context : String,
-}
-
-impl GraphContext {
-  pub fn null() -> GraphContext {
-    GraphContext {
-      context : String::new(),
-    }
-  }
-  pub fn new(context_init: &str) -> GraphContext {
-    if context_init.is_empty() {
-      GraphContext {
-        context : String::new(),
-      }
-    } else {
-      GraphContext {
-        context: context_init.to_string(),
-      }
-    }
+    let v: Vec<u8> = rmp_serde::to_vec(&result?)?;
+    Ok(v)
   }
 
-  pub fn process_context(context: &str, payload: Vec<u8>)  -> Result<Vec<u8>, Box<dyn Error>> {
-    GraphContext::new(&context).process(payload.as_slice())
-  }
-
-  pub fn process(&self, slice: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
-    if let Ok("ver") = rmp_serde::from_slice(slice) {
-      mr_service()
-    } else if let Ok(((("src", "=", ego), ("dest", "=", target)), (), "null")) = rmp_serde::from_slice(slice) {
-      mr_node_score_null(ego, target)
-    } else if let Ok(((("src", "=", ego), ), (), "null")) = rmp_serde::from_slice(slice) {
-      mr_scores_null(ego)
-    } else if let Ok(("context", context, payload)) = rmp_serde::from_slice(slice) { // rmp_serde::from_slice::<(&str, &str, Vec<u8>)>(slice) {
-      Self::process_context(context, payload)
-    } else if let Ok(((("src", "=", ego), ("dest", "=", target)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_node_score(ego, target)
-    } else if let Ok(((("src", "=", ego), ), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, "",        false,         f64::MAX, true,  f64::MIN, true,  0,     u32::MAX)
-    } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("score", ">", score_gt), ("score", "<", score_lt)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, node_kind, false,         score_lt, false, score_gt, false, 0,     u32::MAX)
-    } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("score", ">=", score_gt), ("score", "<", score_lt)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, node_kind, false,         score_lt, false, score_gt, true,  0,     u32::MAX)
-    } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("score", ">", score_gt), ("score", "<=", score_lt)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, node_kind, false,         score_lt, true,  score_gt, false, 0,     u32::MAX)
-    } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("score", ">=", score_gt), ("score", "<=", score_lt)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, node_kind, false,         score_lt, true,  score_gt, true,  0,     u32::MAX)
-    } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("hide_personal", hide_personal), ("score", ">", score_gt), ("score", "<", score_lt), ("index", index), ("count", count)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, node_kind, hide_personal, score_lt, false, score_gt, false, index, count)
-    } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("hide_personal", hide_personal), ("score", ">=", score_gt), ("score", "<", score_lt), ("index", index), ("count", count)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, node_kind, hide_personal, score_lt, false, score_gt, true,  index, count)
-    } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("hide_personal", hide_personal), ("score", ">", score_gt), ("score", "<=", score_lt), ("index", index), ("count", count)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, node_kind, hide_personal, score_lt, true,  score_gt, false, index, count)
-    } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("hide_personal", hide_personal), ("score", ">=", score_gt), ("score", "<=", score_lt), ("index", index), ("count", count)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_scores(ego, node_kind, hide_personal, score_lt, true,  score_gt, true,  index, count)
-    } else if let Ok((((subject, object, amount), ), ())) = rmp_serde::from_slice(slice) {
-      self.mr_put_edge(subject, object, amount)
-    } else if let Ok(((("src", "delete", ego), ("dest", "delete", target)), ())) = rmp_serde::from_slice(slice) {
-      self.mr_delete_edge(ego, target)
-    } else if let Ok(((("src", "delete", ego), ), ())) = rmp_serde::from_slice(slice) {
-      self.mr_delete_node(ego)
-    } else if let Ok((((ego, "gravity", focus), positive_only, index, count), ())) = rmp_serde::from_slice(slice) {
-      self.mr_graph(ego, focus, positive_only, index, count)
-    } else if let Ok((((ego, "connected"), ), ())) = rmp_serde::from_slice(slice) {
-      self.mr_connected(ego)
-    } else if let Ok(("nodes", ())) = rmp_serde::from_slice(slice) {
-      self.mr_nodelist()
-    } else if let Ok(("edges", ())) = rmp_serde::from_slice(slice) {
-      self.mr_edges()
-    } else if let Ok(("users_stats", ego, ())) = rmp_serde::from_slice(slice) {
-      self.mr_mutual_scores(ego)
-    } else if let Ok(("reset", ())) = rmp_serde::from_slice(slice) {
-      self.mr_reset()
-    } else if let Ok(("zerorec", ())) = rmp_serde::from_slice(slice) {
-      self.mr_zerorec()
-    } else {
-      let err: String = format!("Error: Cannot understand request {:?}", slice);
-      Err(err.into())
-    }
-  }
-
-  fn mr_node_score(
-    &self,
-    ego    : &str,
-    target : &str
+  fn read_node_score(
+    &mut self,
+    context : &str,
+    ego     : &str,
+    target  : &str
   ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    let mut graph = GRAPH.lock()?;
+    log_info!("CMD read_node_score");
 
-    let ego_id    = graph.info.node_name_to_id_locked(ego)?;
-    let target_id = graph.info.node_name_to_id_locked(target)?;
-    let rank      = &mut graph.graph;
+    let ego_id    = self.node_id_from_name(ego)?;
+    let target_id = self.node_id_from_name(target)?;
 
-    let w = match rank.get_node_score(ego_id, target_id) {
+    let graph = self.mut_graph_from_context(context)?;
+
+    let w = match graph.get_node_score(ego_id, target_id) {
       Ok(x) => x,
       _     => {
-        let _ = rank.calculate(ego_id, *NUM_WALK)?;
-        rank.get_node_score(ego_id, target_id)?
+        log_warning!("(read_node_score) Node scores recalculation for {}", ego_id);
+        graph.calculate(ego_id, *NUM_WALK)?;
+        graph.get_node_score(ego_id, target_id)?
       }
     };
 
@@ -465,8 +487,9 @@ impl GraphContext {
     Ok(rmp_serde::to_vec(&result)?)
   }
 
-  fn mr_scores(
-    &self,
+  fn read_scores(
+    &mut self,
+    context       : &str,
     ego           : &str,
     kind_str      : &str,
     hide_personal : bool,
@@ -476,79 +499,108 @@ impl GraphContext {
     score_gte     : bool,
     index         : u32,
     count         : u32
-  ) -> Result<Vec<u8>, Box<dyn Error + 'static>>
-  {
+  ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
+    log_info!("CMD read_scores");
+
     let kind = match kind_str {
       ""  => NodeKind::Unknown,
       "U" => NodeKind::User,
       "B" => NodeKind::Beacon,
       "C" => NodeKind::Comment,
        _  => {
+         log_error!("Invalid node kind string: {}", kind_str);
          return Err(format!("Invalid node kind \"{}\"; only \"U\", \"B\", \"C\" are allowed", kind_str).into());
       },
     };
 
-    let graph = &mut *GRAPH.lock()?;
+    let node_id = self.node_id_from_name(ego)?;
 
-    let (rank, info) = (if self.context.is_empty() {
-        &mut graph.graph
-      } else {
-        graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?
-      },
-      &mut graph.info);
-
-    let node_id = info.node_name_to_id_locked(ego)?;
-
-    //  NOTE
-    //  We don't have to recalculate scores since we use
-    //  incremental MeritRank.
-
-    let ranks = match rank.get_ranks(node_id, None) {
+    let ranks = match self.mut_graph_from_context(context)?.get_ranks(node_id, None) {
       Ok(x) => x,
       _     => {
-        let _ = rank.calculate(node_id, *NUM_WALK)?;
-        rank.get_ranks(node_id, None)?
+        log_warning!("(read_scores) Node scores recalculation for {}", node_id);
+        let graph = self.mut_graph_from_context(context)?;
+        let _ = graph.calculate(node_id, *NUM_WALK)?;
+        graph.get_ranks(node_id, None)?
       }
     };
 
-    let mut intermediate : Vec<(NodeId, NodeKind, Weight)> =
+    //  FIXME
+    //  Fix this boilerplate madness!!!
+    //
+    //  Problems:
+    //  1.  We have to use ? operator inside of closures, so we can handle errors properly.
+    //  2.  We have to borrow self multiple times at once to call methods.
+
+    let im1 : Result<Vec<(NodeId, NodeKind, Weight)>, Box<dyn Error + 'static>> =
       ranks
         .into_iter()
         .map(|(n, w)| {
-          (
-            n,
-            rank.get_node_data(n).unwrap_or(NodeKind::Unknown),
-            w,
-          )
+            Ok((
+              n,
+              self.node_info_from_id(n)?.kind,
+              w,
+            ))
         })
-        .filter(|(_, target_kind, _)| {
-          match kind {
-            NodeKind::Unknown => true,
-            _                 => kind == *target_kind,
-          }
-        })
-        .filter(|(_, _, score)| score_gt < *score || (score_gte && score_gt == *score))
-        .filter(|(_, _, score)| *score < score_lt || (score_lte && score_lt == *score))
-        .filter(|(target_id, target_kind, _)|
-          if hide_personal {
-            !((*target_kind == NodeKind::Comment || *target_kind == NodeKind::Beacon) &&
-              rank.get_edge(*target_id, node_id).is_some())
-          } else {
-            true
+        .filter(|val|
+          match val {
+            Ok((_, NodeKind::Unknown, _)) => true,
+            Ok((_, target_kind, _))       => kind == *target_kind,
+            _                             => true,
           }
         )
+        .filter(|val| match val {
+          Ok((_, _, score)) => score_gt < *score || (score_gte && score_gt == *score),
+          _                 => true,
+        })
+        .filter(|val| match val {
+          Ok((_, _, score)) => *score < score_lt || (score_lte && score_lt == *score),
+          _                 => true,
+        })
         .collect();
 
-    intermediate.sort_by(|(_, _, a), (_, _, b)| a.total_cmp(b));
+    let im2 : Result<Vec<(NodeId, NodeKind, Weight)>, Box<dyn Error + 'static>> =
+      im1?
+        .into_iter()
+        .map(|x| Ok(x))
+        .filter_map(|val| match val {
+          Ok((target_id, target_kind, weight)) =>
+            if hide_personal {
+              if target_kind == NodeKind::Comment || target_kind == NodeKind::Beacon {
+                match self.mut_graph_from_context(context) {
+                  Ok(graph) => 
+                    if graph.get_edge(target_id, node_id).is_some() {
+                      None
+                    } else {
+                      Some(Ok((target_id, target_kind, weight)))
+                    },
+                  _ => Some(Ok((target_id, target_kind, weight))),
+                }
+              } else {
+                Some(Ok((target_id, target_kind, weight)))
+              }
+            } else {
+              Some(Ok((target_id, target_kind, weight)))
+            }
+          Err(x) => Some(Err(x)),
+        })
+        .collect();
 
-    let page : Result<Vec<(&str, String, Weight)>, _> =
-      intermediate
+    //
+    //  ================================
+    //
+
+    let mut sorted = im2?;
+    sorted.sort_by(|(_, _, a), (_, _, b)| a.total_cmp(b));
+
+    let page : Result<Vec<(&str, &str, Weight)>, _> =
+      sorted
         .iter()
         .skip(index as usize)
         .take(count as usize)
         .map(|(target_id, _, weight)| {
-          match info.node_id_to_name_locked(*target_id) {
-            Ok(x)  => Ok((ego, x, *weight)),
+          match self.node_info_from_id(*target_id) {
+            Ok(x)  => Ok((ego, x.name.as_str(), *weight)),
             Err(x) => Err(x)
           }
         })
@@ -557,98 +609,71 @@ impl GraphContext {
     Ok(rmp_serde::to_vec(&page?)?)
   }
 
-  fn set_edge_locked(
-    &self,
-    graph  : &mut MutexGuard<GraphSingleton>,
-    src    : NodeId,
-    dst    : NodeId,
-    amount : f64
-  ) -> Result<(), Box<dyn Error + 'static>> {
-    if self.context.is_empty() {
-      graph.graph.add_edge(src, dst, amount);
-    } else {
-      if !graph.graphs.contains_key(self.context.as_str()) {
-        graph.graphs.insert(self.context.clone(), MeritRank::new(Graph::new())?);
-      }
-      let null_weight    = graph.graph.get_edge(src, dst).unwrap_or(0.0);
-      let contexted_rank = graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?;
-      let old_weight     = contexted_rank.get_edge(src, dst).unwrap_or(0.0);
-
-      contexted_rank.add_edge(src, dst, amount);
-      graph.graph.add_edge(src, dst, null_weight + amount - old_weight);
-    }
-
-    Ok(())
-  }
-
-  fn mr_put_edge(
-    &self,
+  fn write_put_edge(
+    &mut self,
+    context : &str,
     src     : &str,
     dst     : &str,
     amount  : f64
   ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    let mut graph = GRAPH.lock()?;
+    log_info!("CMD write_put_edge");
 
-    let (src_id, dst_id) =
-      if self.context.is_empty() {
-        ( graph.add_node_id(src),
-          graph.add_node_id(dst) )
-      } else {
-        ( graph.add_node_id_contexted(self.context.as_str(), src)?,
-          graph.add_node_id_contexted(self.context.as_str(), dst)? )
-      };
+    let src_id = self.find_or_add_node_by_name(context, src)?;
+    let dst_id = self.find_or_add_node_by_name(context, dst)?;
 
-    self.set_edge_locked(&mut graph, src_id, dst_id, amount)?;
+    self.set_edge(context, src_id, dst_id, amount)?;
 
     let result: Vec<(&str, &str, f64)> = [(src, dst, amount)].to_vec();
     Ok(rmp_serde::to_vec(&result)?)
   }
 
-  fn mr_delete_edge(
-    &self,
-    src : &str,
-    dst : &str,
+  fn write_delete_edge(
+    &mut self,
+    context : &str,
+    src     : &str,
+    dst     : &str,
   ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    let _ = self.mr_put_edge(src, dst, 0.0)?;
+    log_info!("CMD write_delete_edge");
+
+    let src_id = self.node_id_from_name(src)?;
+    let dst_id = self.node_id_from_name(dst)?;
+
+    self.set_edge(context, src_id, dst_id, 0.0)?;
+
     Ok(EMPTY_RESULT.to_vec())
   }
 
-  fn mr_delete_node(
-    &self,
-    ego : &str,
+  fn write_delete_node(
+    &mut self,
+    context : &str,
+    node    : &str,
   ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    let mut graph = GRAPH.lock()?;
-    let     id    = *graph.info.node_names.get(ego).ok_or("No node")?;
+    log_info!("CMD write_delete_node");
 
-    for n in graph.graph.neighbors_weighted(id, Neighbors::All).ok_or("Unable to get neighbors")?.keys() {
-      self.set_edge_locked(&mut graph, id, *n, 0.0)?;
+    let id = self.node_id_from_name(node)?;
+
+    for n in self.mut_graph_from_context(context)?.neighbors_weighted(id, Neighbors::All).ok_or("Unable to get neighbors")?.keys() {
+      self.set_edge(context, id, *n, 0.0)?;
     }
 
     Ok(EMPTY_RESULT.to_vec())
   }
 
-  fn gravity_graph(
-    &self,
+  fn read_graph(
+    &mut self,
+    context       : &str,
     ego           : &str,
     focus         : &str,
-    positive_only : bool
-  ) -> Result<
-      Vec<(String, String, Weight)>,
-      Box<dyn Error + 'static>
-  > {
-    let graph = &mut *GRAPH.lock()?;
-
-    let (rank, info) = (if self.context.is_empty() {
-        &mut graph.graph
-      } else {
-        graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?
-      },
-      &mut graph.info);
-
-    let focus_id = info.node_name_to_id_locked(focus)?;
+    positive_only : bool,
+    index         : u32,
+    count         : u32
+  ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
+    log_info!("CMD read_graph");
+    
+    let focus_id = self.node_id_from_name(focus)?;
 
     let focus_vector : Vec<(NodeId, NodeId, Weight)> =
-      rank
+      self.mut_graph_from_context(context)?
         .neighbors_weighted(focus_id, Neighbors::All).ok_or("Unable to get neighbors")?.iter()
         .map(|(target_id, weight)| (focus_id, *target_id, *weight))
         .collect();
@@ -656,15 +681,17 @@ impl GraphContext {
     let mut copy = Graph::new();
 
     for (a_id, b_id, w_ab) in focus_vector {
-      let b_kind = rank.get_node_data(b_id).unwrap_or(NodeKind::Unknown);
+      let b_kind = self.node_info_from_id(b_id)?.kind;
 
       if b_kind == NodeKind::User {
         if positive_only {
-          let score = match rank.get_node_score(a_id, b_id) {
+          let score = match self.mut_graph_from_context(context)?.get_node_score(a_id, b_id) {
             Ok(x) => x,
             _ => {
-              rank.calculate(a_id, *NUM_WALK)?;
-              rank.get_node_score(a_id, b_id)?
+              log_warning!("(read_graph) Node scores recalculation for {}", a_id);
+              let graph = self.mut_graph_from_context(context)?;
+              graph.calculate(a_id, *NUM_WALK)?;
+              graph.get_node_score(a_id, b_id)?
             }
           };
 
@@ -680,7 +707,7 @@ impl GraphContext {
         )?;
       } else if b_kind == NodeKind::Comment || b_kind == NodeKind::Beacon {
         let v_b : Vec<(NodeId, NodeId, Weight)> =
-          rank
+          self.mut_graph_from_context(context)?
             .neighbors_weighted(b_id, Neighbors::All).ok_or("Unable to get neighbors")?.iter()
             .map(|(target_id, weight)| (b_id, *target_id, *weight))
             .collect();
@@ -693,7 +720,7 @@ impl GraphContext {
             continue;
           }
 
-          let c_kind = rank.get_node_data(c_id).unwrap_or(NodeKind::Unknown);
+          let c_kind = self.node_info_from_id(c_id)?.kind;
 
           if c_kind != NodeKind::User {
             continue;
@@ -710,18 +737,19 @@ impl GraphContext {
     }
 
     let neighbors : Vec<(EdgeIndex, NodeIndex, NodeId)> = copy.outgoing(focus_id);
-    let ego_id = info.node_name_to_id_locked(ego)?;
+    let ego_id = self.node_id_from_name(ego)?;
 
     let mut sorted = Vec::<(Weight, (EdgeIndex, NodeIndex))>::new();
     sorted.reserve_exact(neighbors.len());
 
     for (edge_index, node_index, node_id) in neighbors {
-      let weight = match rank.get_node_score(ego_id, node_id) {
+      let weight = match self.mut_graph_from_context(context)?.get_node_score(ego_id, node_id) {
         Ok(x) => x,
         _     => {
-          assert!(false);
-          let _ = rank.calculate(ego_id, *NUM_WALK)?;
-          rank.get_node_score(ego_id, node_id)?
+          log_warning!("(read_graph) Node scores recalculation for {}", ego_id);
+          let graph = self.mut_graph_from_context(context)?;
+          graph.calculate(ego_id, *NUM_WALK)?;
+          graph.get_node_score(ego_id, node_id)?
         }
       };
       sorted.push((weight, (edge_index, node_index)));
@@ -750,8 +778,8 @@ impl GraphContext {
         .collect::<Vec<&NodeId>>(); // was: (3)
 
     if let Some((&a, &b, &c)) = v3.clone().into_iter().collect_tuple() {
-      let a_kind = rank.get_node_data(a).unwrap_or(NodeKind::Unknown);
-      let b_kind = rank.get_node_data(b).unwrap_or(NodeKind::Unknown);
+      let a_kind = self.node_info_from_id(a)?.kind;
+      let b_kind = self.node_info_from_id(b)?.kind;
 
       if b_kind == NodeKind::Comment || b_kind == NodeKind::Beacon {
         let w_ab = copy.edge_weight(a, b).ok_or("Unable to get edge weight")?;
@@ -773,251 +801,100 @@ impl GraphContext {
       return Err("Gravity graph failure".into());
     }
 
-    let (_, edges) = copy.all();
-
-    edges
-      .iter()
-      .map(|(n1, n2, weight)| {
-        match (
-          info.node_id_to_name_locked(*n1),
-          info.node_id_to_name_locked(*n2)
-        ) {
-          (Ok(name1), Ok(name2)) => Ok((name1, name2, *weight)),
-          _                      => Err("No node".into())
-        }
-      })
-      .collect()
-  }
-
-  fn mr_graph(
-    &self,
-    ego           : &str,
-    focus         : &str,
-    positive_only : bool,
-    index         : u32,
-    count         : u32
-  ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    let edges            = self.gravity_graph(ego, focus, positive_only)?;
-    let result : Vec<_>  = edges.iter().skip(index as usize).take(count as usize).collect();
+    let edges : Result<Vec<(&str, &str, Weight)>, Box<dyn Error + 'static>> =
+      copy.all().1
+        .iter()
+        .map(|(n1, n2, weight)| {
+          Ok((
+            self.node_info_from_id(*n1)?.name.as_str(),
+            self.node_info_from_id(*n2)?.name.as_str(),
+            *weight
+          ))
+        })
+        .collect();
+    
+    let result : Vec<_>  = edges?.into_iter().skip(index as usize).take(count as usize).collect();
     let v      : Vec<u8> = rmp_serde::to_vec(&result)?;
     Ok(v)
   }
 
-  fn get_connected(&self, ego : &str) -> Result<Vec<(String, String)>, Box<dyn Error + 'static>> {
-    let graph = &mut *GRAPH.lock()?;
-
-    let (rank, info) = (if self.context.is_empty() {
-        &mut graph.graph
-      } else {
-        graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?
-      },
-      &mut graph.info);
-
-    let node_id = info.node_name_to_id_locked(ego)?;
-
-    let result: Vec<(String, String)> =
-      rank
-        .neighbors_weighted(node_id, Neighbors::All).unwrap_or(IntMap::default()).iter()
-        .map(|(target_id, _weight)| (
-          info.node_id_to_name_locked(node_id).unwrap_or(node_id.to_string()),
-          info.node_id_to_name_locked(*target_id).unwrap_or(target_id.to_string())
-        ))
-        .collect();
-
-    return Ok(result);
-  }
-
-  fn mr_connected(
-    &self,
-    ego   : &str
+  fn read_connected(
+    &mut self,
+    context   : &str,
+    ego       : &str
   ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    let edges = self.get_connected(ego)?;
+    log_info!("CMD read_connected");
+
+    let edges = self.connected_node_names(context, ego)?;
+
     if edges.is_empty() {
       return Err("No edges".into());
     }
     return Ok(rmp_serde::to_vec(&edges)?);
   }
 
-  fn recalculate_all(&self, num_walk : usize) -> Result<(), Box<dyn Error + 'static>> {
-    let graph = &mut *GRAPH.lock()?;
-
-    let (rank, info) = (if self.context.is_empty() {
-        &mut graph.graph
-      } else {
-        graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?
-      },
-      &mut graph.info);
-
-    for (_, id) in info.node_names.iter() {
-      if rank.get_node_data(*id)? == NodeKind::User {
-        rank.calculate(*id, num_walk)?;
-      }
-    }
-
-    Ok(())
-  }
-
-  fn get_reduced_graph(&self) -> Result<Vec<(NodeId, NodeId, f64)>, Box<dyn Error + 'static>> {
-    let graph = &mut *GRAPH.lock()?;
-
-    let (rank, info) = (if self.context.is_empty() {
-        &mut graph.graph
-      } else {
-        graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?
-      },
-      &mut graph.info);
-
-    let zero = info.node_name_to_id_locked(ZERO_NODE.as_str());
-
-    let node_kinds : HashMap<NodeId, NodeKind> =
-      info.node_names
+  fn read_nodelist(&self) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
+    log_info!("CMD read_nodelist");
+    
+    let result : Vec<(&str,)> =
+      self.node_infos
         .iter()
-        .map(|(_, id)| (*id, rank.get_node_data(*id).unwrap_or(NodeKind::Unknown)))
-        .collect();
-
-    let users : Vec<NodeId> =
-      info.node_names
-        .iter()
-        .filter(|(_, id)| {
-          match zero {
-            Ok(x) => {
-              if **id == x {
-                return false;
-              }
-            }
-            _ => {}
-          }
-          return match rank.get_node_data(**id) {
-            Ok(NodeKind::User) => true,
-            _                  => false,
-          };
-        })
-        .map(|(_, id)| *id)
-        .collect();
-
-    if users.is_empty() {
-      return Ok(Vec::new());
-    }
-
-    for id in users.iter() {
-      rank.calculate(*id, *NUM_WALK)?;
-    }
-
-    let edges : Vec<(NodeId, NodeId, Weight)> =
-      users.into_iter()
-        .map(|id| {
-          let result : Vec<(NodeId, NodeId, Weight)> =
-            rank.get_ranks(id, None)?
-            .into_iter()
-            .map(|(node_id, score)| (id, node_id, score))
-            .filter(|(ego_id, node_id, score)|
-              node_kinds.get(node_id)
-                .map(|kind| (*kind == NodeKind::User || *kind == NodeKind::Beacon) &&
-                  *score > 0.0 &&
-                  ego_id != node_id)
-                .unwrap_or(false)
-            ).collect();
-          Ok::<Vec<(NodeId, NodeId, Weight)>, MeritRankError>(result)
-        })
-        .filter_map(|res| res.ok())
-        .flatten()
-        .collect();
-
-    //let (_, edges) = my_graph.all(); // not optimal
-    // Note:
-    // Just eat errors in node_id_to_name_unsafe bellow.
-    // Should we pass them out?
-    let result : Vec<(NodeId, NodeId, f64)> =
-      edges
-        .iter()
-        .filter(|(ego_id, dst_id, _)| {
-          match zero {
-            Ok(x) => {
-              if *ego_id == x || *dst_id == x {
-                return false;
-              }
-            },
-            _ => {}
-          }
-          let ego_kind = *node_kinds.get(ego_id).unwrap_or(&NodeKind::Unknown);
-          let dst_kind = *node_kinds.get(dst_id).unwrap_or(&NodeKind::Unknown);
-          return  ego_id != dst_id &&
-                  ego_kind == NodeKind::User &&
-                 (dst_kind == NodeKind::User || dst_kind == NodeKind::Beacon);
-        })
-        .map(|(ego_id, dst_id, weight)| (*ego_id, *dst_id, *weight))
-        .collect();
-
-    return Ok(result);
-  }
-
-  fn mr_nodelist(&self) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    let graph = &mut *GRAPH.lock()?;
-
-    let (_rank, info) = (if self.context.is_empty() {
-        &mut graph.graph
-      } else {
-        graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?
-      },
-      &mut graph.info);
-
-    let result : Vec<(String,)> =
-      info.node_names
-        .iter()
-        //.map(|(name, id)| (name.clone(), *id))
-        //.filter(|(_, id)|
-        //  match rank.neighbors_weighted(*id, Neighbors::All) {
-        //    Some(x) => x.len() > 0,
-        //    None    => false,
-        //  }
-        //)
-        .map(|(name, _)| (name.clone(),))
+        .map(|info| (info.name.as_str(),))
         .collect();
 
     let v: Vec<u8> = rmp_serde::to_vec(&result)?;
     Ok(v)
   }
 
-  fn mr_edges(&self) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    let graph = &mut *GRAPH.lock()?;
+  fn read_edges(&mut self, context : &str) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
+    log_info!("CMD read_edges");
 
-    let (rank, info) = (if self.context.is_empty() {
-        &mut graph.graph
-      } else {
-        graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?
-      },
-      &mut graph.info);
+    let infos = self.node_infos.clone();
 
-    let mut v : Vec<(String, String, Weight)> = vec![];
-    for (_, src) in info.node_names.iter() {
-      let src_name = info.node_id_to_name_locked(*src)?;
-      for (dst, weight) in
-        rank.neighbors_weighted(*src, Neighbors::All).unwrap_or(IntMap::default()).iter() {
-        let dst_name = info.node_id_to_name_locked(*dst)?;
-        v.push((src_name.clone(), dst_name, *weight));
+    let mut v = Vec::<(&str, &str, Weight)>::new();
+    v.reserve(infos.len() * 2); // ad hok
+
+    for src_id in 0..infos.len() {
+      let src_name = infos[src_id].name.as_str();
+
+      for (dst_id, weight) in
+        self
+          .mut_graph_from_context(context)?
+          .neighbors_weighted(src_id, Neighbors::All)
+          .unwrap_or(IntMap::default())
+          .iter()
+      {
+        let dst_name =
+          infos
+            .get(*dst_id)
+            .ok_or("Node does not exist")?.name
+            .as_str();
+        v.push((src_name, dst_name, *weight));
       }
     }
 
     Ok(rmp_serde::to_vec(&v)?)
   }
 
-  fn mr_mutual_scores(&self, ego : &str) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    let graph = &mut *GRAPH.lock()?;
+  fn read_mutual_scores(
+    &mut self,
+    context   : &str,
+    ego       : &str
+  ) -> Result<
+    Vec<u8>,
+    Box<dyn Error + 'static>
+  > {
+    log_info!("CMD read_mutual_scores");
 
-    let (rank, info) = (if self.context.is_empty() {
-        &mut graph.graph
-      } else {
-        graph.graphs.get_mut(self.context.as_str()).ok_or("No context")?
-      },
-      &mut graph.info);
+    let ego_id = self.node_id_from_name(ego)?;
 
-    let ego_id = info.node_name_to_id_locked(ego)?;
-
-    let ranks = match rank.get_ranks(ego_id, None) {
+    let ranks = match self.mut_graph_from_context(context)?.get_ranks(ego_id, None) {
       Ok(x) => x,
       _     => {
-        let _ = rank.calculate(ego_id, *NUM_WALK)?;
-        rank.get_ranks(ego_id, None)?
+        log_warning!("(read_mutual_scores) Node scores recalculation for {}", ego_id);
+        let graph = self.mut_graph_from_context(context)?;
+        graph.calculate(ego_id, *NUM_WALK)?;
+        graph.get_ranks(ego_id, None)?
       }
     };
 
@@ -1026,15 +903,19 @@ impl GraphContext {
     v.reserve_exact(ranks.len());
 
     for (node, score) in ranks {
-      if score > 0.0 && rank.get_node_data(node).unwrap_or(NodeKind::Unknown) == NodeKind::User {
+      let info = self.node_info_from_id(node)?.clone();
+      if score > 0.0 && info.kind == NodeKind::User
+      {
+        let graph = self.mut_graph_from_context(context)?;
         v.push((
-          info.node_id_to_name_locked(node)?,
+          info.name,
           score,
-          match rank.get_node_score(node, ego_id) {
+          match graph.get_node_score(node, ego_id) {
             Ok(x) => x,
             _     => {
-              let _ = rank.calculate(node, *NUM_WALK)?;
-              rank.get_node_score(node, ego_id)?
+              log_warning!("(read_mutual_scores) Node scores recalculation for {}", ego_id);
+              graph.calculate(node, *NUM_WALK)?;
+              graph.get_node_score(node, ego_id)?
             }
           }
         ));
@@ -1044,21 +925,125 @@ impl GraphContext {
     Ok(rmp_serde::to_vec(&v)?)
   }
 
-  fn delete_from_zero(&self) -> Result<(), Box<dyn Error + 'static>> {
-    let edges = match self.get_connected(&ZERO_NODE) {
+  fn write_reset(&mut self) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
+    log_info!("CMD write_reset");
+
+    self.reset()?;
+
+    return Ok(rmp_serde::to_vec(&"Ok".to_string())?);
+  }
+}
+
+//  ================================================
+//
+//    Zero node recalculation
+//
+//  ================================================
+
+impl AugMultiGraph {
+  fn reduced_graph(&mut self) -> Result<Vec<(NodeId, NodeId, f64)>, Box<dyn Error + 'static>> {
+    log_verbose!("reduced_graph");
+    
+    let zero = self.find_or_add_node_by_name("", ZERO_NODE.as_str())?;
+
+    let users : Vec<NodeId> =
+      self.node_infos
+        .iter()
+        .enumerate()
+        .filter(|(id, info)|
+          *id != zero && info.kind == NodeKind::User
+        )
+        .map(|(id, _)| id)
+        .collect();
+
+    if users.is_empty() {
+      return Ok(Vec::new());
+    }
+
+    for id in users.iter() {
+      self.mut_graph_from_context("")?.calculate(*id, *NUM_WALK)?;
+    }
+
+    let edges : Vec<(NodeId, NodeId, Weight)> =
+      users.into_iter()
+        .map(|id| {
+          let result : Result<Vec<(NodeId, NodeId, Weight)>, _> =
+            self
+              .mut_graph_from_context("")?
+              .get_ranks(id, None)?
+              .into_iter()
+              .map(|(node_id, score)| (id, node_id, score))
+              .filter_map(|(ego_id, node_id, score)| {
+                let kind = match self.node_info_from_id(node_id) {
+                  Ok(info) => info.kind,
+                  Err(x)   => return Some(Err(x)),
+                };
+                if (kind == NodeKind::User || kind == NodeKind::Beacon) &&
+                   score > 0.0 &&
+                   ego_id != node_id
+                {
+                  Some(Ok((ego_id, node_id, score)))
+                } else {
+                  None
+                }
+              })
+              .collect();
+          Ok::<Vec<(NodeId, NodeId, Weight)>, Box<dyn Error + 'static>>(result?)
+        })
+        .filter_map(|res| res.ok())
+        .flatten()
+        .collect();
+
+    let result : Result<Vec<(NodeId, NodeId, f64)>, Box<dyn Error + 'static>> =
+      edges
+        .into_iter()
+        .map(|(ego_id, dst_id, weight)| {
+          let ego_kind = self.node_info_from_id(ego_id)?.kind;
+          let dst_kind = self.node_info_from_id(dst_id)?.kind;
+          Ok((ego_id, ego_kind, dst_id, dst_kind, weight))
+        })
+        .filter(|val| match val {
+          Ok((ego_id, ego_kind, dst_id, dst_kind, _)) => {
+            if *ego_id == zero || *dst_id == zero {
+              false
+            } else {
+              return  ego_id != dst_id &&
+                      *ego_kind == NodeKind::User &&
+                     (*dst_kind == NodeKind::User || *dst_kind == NodeKind::Beacon);
+            }
+          },
+          Err(_) => true,
+        })
+        .map(|val| match val {
+          Ok((ego_id, _, dst_id, _, weight)) => Ok((ego_id, dst_id, weight)),
+          Err(x)                             => Err(x),
+        })
+        .collect();
+
+    return Ok(result?);
+  }
+
+  fn delete_from_zero(&mut self) -> Result<(), Box<dyn Error + 'static>> {
+    log_verbose!("delete_from_zero");
+
+    let src_id = self.node_id_from_name(ZERO_NODE.as_str())?;
+    
+    let edges = match self.connected_nodes("", src_id) {
       Ok(x) => x,
       _     => return Ok(()),
     };
 
-    for (src, dst) in edges.iter() {
-      let _ = self.mr_delete_edge(src, dst)?;
+    for (src, dst) in edges {
+      self.set_edge("", src, dst, 0.0)?;
     }
 
     return Ok(());
   }
 
-  fn top_nodes(&self) -> Result<Vec<(NodeId, f64)>, Box<dyn Error + 'static>> {
-    let reduced = self.get_reduced_graph()?;
+  fn top_nodes(&mut self) -> Result<Vec<(NodeId, f64)>, Box<dyn Error + 'static>> {
+    log_verbose!("top_nodes");
+
+    let reduced = self.reduced_graph()?;
 
     if reduced.is_empty() {
       return Err("Reduced graph empty".into());
@@ -1066,15 +1051,12 @@ impl GraphContext {
 
     let mut pr = Pagerank::<NodeId>::new();
 
-    let zero = GraphSingleton::node_name_to_id(ZERO_NODE.as_str());
+    let zero = self.node_id_from_name(ZERO_NODE.as_str())?;
 
     reduced
       .iter()
       .filter(|(source, target, _weight)|
-        match zero {
-          Ok(x) => return *source != x && *target != x,
-          _     => return true,
-        }
+        *source != zero && *target != zero
       )
       .for_each(|(source, target, _weight)| {
         // TODO: check weight
@@ -1103,21 +1085,11 @@ impl GraphContext {
     return Ok(res);
   }
 
-  fn mr_reset(&self) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    let mut graph = GRAPH.lock()?;
+  fn write_zerorec(&mut self) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
+    log_info!("CMD write_zerorec");
 
-    if !self.context.is_empty() {
-      return Err("Can only reset for all contexts".into());
-    }
-
-    let _ = graph.reset()?;
-
-    return Ok(rmp_serde::to_vec(&"Ok".to_string())?);
-  }
-
-  fn mr_zerorec(&self) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    //  NOTE
-    //  This func is not thread-safe.
+    let _ = self.add_context_if_does_not_exist("");
+    let _ = self.find_or_add_node_by_name("", ZERO_NODE.as_str())?;
 
     self.recalculate_all(0)?; // FIXME Ad hok hack
     self.delete_from_zero()?;
@@ -1126,19 +1098,238 @@ impl GraphContext {
 
     self.recalculate_all(0)?; // FIXME Ad hok hack
     {
-      let mut graph = GRAPH.lock()?;
-
-      let zero = match graph.info.node_name_to_id_locked(ZERO_NODE.as_str()) {
-        Ok(x) => x,
-        _     => graph.add_node_id(ZERO_NODE.as_str()),
-      };
+      let zero = self.node_id_from_name(ZERO_NODE.as_str())?;
 
       for (node_id, amount) in nodes.iter() {
-        self.set_edge_locked(&mut graph, zero, *node_id, *amount)?;
+        self.set_edge("", zero, *node_id, *amount)?;
       }
     }
     self.recalculate_all(*NUM_WALK)?; // FIXME Ad hok hack
 
     return Ok(rmp_serde::to_vec(&"Ok".to_string())?);
+  }
+}
+
+//  ================================================
+//
+//    The service
+//
+//  ================================================
+
+fn decode_and_handle_request(
+  multi_graph : &mut AugMultiGraph,
+  request     : &[u8]
+) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
+  log_verbose!("decode_and_handle_request");
+
+  let mut context : &str  = "";
+  let mut payload : &[u8] = request;
+
+  if let Ok(("context", context_value, contexted_payload)) = rmp_serde::from_slice(payload) {
+    context = context_value;
+    payload = contexted_payload;
+  }
+
+  if let Ok("ver") = rmp_serde::from_slice(payload) {
+    if context.is_empty() {
+      read_version()
+    } else {
+      Err(format!("Invalid request: {:?}", request).into())
+    }
+  } else if let Ok(((("src", "=", ego), ("dest", "=", target)), (), "null")) = rmp_serde::from_slice(payload) {
+    if context.is_empty() {
+      multi_graph.read_node_score_null(ego, target)
+    } else {
+      Err(format!("Invalid request: {:?}", request).into())
+    }
+  } else if let Ok(((("src", "=", ego), ), (), "null")) = rmp_serde::from_slice(payload) {
+    if context.is_empty() {
+      multi_graph.read_scores_null(ego)
+    } else {
+      Err(format!("Invalid request: {:?}", request).into())
+    }
+  } else if let Ok(((("src", "=", ego), ("dest", "=", target)), ())) = rmp_serde::from_slice(payload) {
+    multi_graph.read_node_score(context, ego, target)
+  } else if let Ok(((("src", "=", ego), ), ())) = rmp_serde::from_slice(payload) {
+    multi_graph.read_scores(context, ego, "",        false,         f64::MAX, true,  f64::MIN, true,  0,     u32::MAX)
+  } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("score", ">", score_gt), ("score", "<", score_lt)), ())) = rmp_serde::from_slice(payload) {
+    multi_graph.read_scores(context, ego, node_kind, false,         score_lt, false, score_gt, false, 0,     u32::MAX)
+  } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("score", ">=", score_gt), ("score", "<", score_lt)), ())) = rmp_serde::from_slice(payload) {
+    multi_graph.read_scores(context, ego, node_kind, false,         score_lt, false, score_gt, true,  0,     u32::MAX)
+  } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("score", ">", score_gt), ("score", "<=", score_lt)), ())) = rmp_serde::from_slice(payload) {
+    multi_graph.read_scores(context, ego, node_kind, false,         score_lt, true,  score_gt, false, 0,     u32::MAX)
+  } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("score", ">=", score_gt), ("score", "<=", score_lt)), ())) = rmp_serde::from_slice(payload) {
+    multi_graph.read_scores(context, ego, node_kind, false,         score_lt, true,  score_gt, true,  0,     u32::MAX)
+  } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("hide_personal", hide_personal), ("score", ">", score_gt), ("score", "<", score_lt), ("index", index), ("count", count)), ())) = rmp_serde::from_slice(payload) {
+    multi_graph.read_scores(context, ego, node_kind, hide_personal, score_lt, false, score_gt, false, index, count)
+  } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("hide_personal", hide_personal), ("score", ">=", score_gt), ("score", "<", score_lt), ("index", index), ("count", count)), ())) = rmp_serde::from_slice(payload) {
+    multi_graph.read_scores(context, ego, node_kind, hide_personal, score_lt, false, score_gt, true,  index, count)
+  } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("hide_personal", hide_personal), ("score", ">", score_gt), ("score", "<=", score_lt), ("index", index), ("count", count)), ())) = rmp_serde::from_slice(payload) {
+    multi_graph.read_scores(context, ego, node_kind, hide_personal, score_lt, true,  score_gt, false, index, count)
+  } else if let Ok(((("src", "=", ego), ("node_kind", node_kind), ("hide_personal", hide_personal), ("score", ">=", score_gt), ("score", "<=", score_lt), ("index", index), ("count", count)), ())) = rmp_serde::from_slice(payload) {
+    multi_graph.read_scores(context, ego, node_kind, hide_personal, score_lt, true,  score_gt, true,  index, count)
+  } else if let Ok((((subject, object, amount), ), ())) = rmp_serde::from_slice(payload) {
+    multi_graph.write_put_edge(context, subject, object, amount)
+  } else if let Ok(((("src", "delete", ego), ("dest", "delete", target)), ())) = rmp_serde::from_slice(payload) {
+    multi_graph.write_delete_edge(context, ego, target)
+  } else if let Ok(((("src", "delete", ego), ), ())) = rmp_serde::from_slice(payload) {
+    multi_graph.write_delete_node(context, ego)
+  } else if let Ok((((ego, "gravity", focus), positive_only, index, count), ())) = rmp_serde::from_slice(payload) {
+    multi_graph.read_graph(context, ego, focus, positive_only, index, count)
+  } else if let Ok((((ego, "connected"), ), ())) = rmp_serde::from_slice(payload) {
+    multi_graph.read_connected(context, ego)
+  } else if let Ok(("nodes", ())) = rmp_serde::from_slice(payload) {
+    if context.is_empty() {
+      multi_graph.read_nodelist()
+    } else {
+      Err(format!("Invalid request: {:?}", request).into())
+    }
+  } else if let Ok(("edges", ())) = rmp_serde::from_slice(payload) {
+    multi_graph.read_edges(context)
+  } else if let Ok(("users_stats", ego, ())) = rmp_serde::from_slice(payload) {
+    multi_graph.read_mutual_scores(context, ego)
+  } else if let Ok(("reset", ())) = rmp_serde::from_slice(payload) {
+    if context.is_empty() {
+      multi_graph.write_reset()
+    } else {
+      Err(format!("Invalid request: {:?}", request).into())
+    }
+  } else if let Ok(("zerorec", ())) = rmp_serde::from_slice(payload) {
+    if context.is_empty() {
+      multi_graph.write_zerorec()
+    } else {
+      Err(format!("Invalid request: {:?}", request).into())
+    }
+  } else {
+    Err(format!("Invalid request: {:?}", request).into())
+  }
+}
+
+fn process(
+  multi_graph : &mut AugMultiGraph,
+  req         : Message
+) -> Vec<u8> {
+  log_verbose!("process");
+
+  match decode_and_handle_request(multi_graph, req.as_slice()) {
+    Ok(bytes)  => bytes,
+    Err(error) => match rmp_serde::to_vec(&error.to_string()) {
+      Ok(bytes)  => bytes,
+      Err(error) => {
+        log_error!("(process) Unable to serialize error: {:?}", error);
+        Vec::new()
+      },
+    },
+  }
+}
+
+fn worker_callback(multi_graph : Arc<Mutex<AugMultiGraph>>, aio : Aio, ctx : &Context, res : AioResult) {
+  log_verbose!("worker_callback");
+
+  match res {
+    AioResult::Send(Ok(_)) => {
+      match ctx.recv(&aio) {
+        Ok(_) => {},
+        Err(error) => {
+          log_error!("(worker_callback) RECV failed: {}", error);
+        },
+      }
+    },
+
+    AioResult::Recv(Ok(req)) => {
+      match multi_graph.lock() {
+        Ok(ref mut guard) => {
+          let msg : Vec<u8> = process(
+            guard.deref_mut(),
+            req
+          );
+          match ctx.send(&aio, msg.as_slice()) {
+            Ok(_) => {},
+            Err(error) => {
+              log_error!("(worker_callback) SEND failed: {:?}", error);
+            }
+          };
+        },
+        Err(error) => {
+          log_error!("(worker_callback) Mutex lock failed: {:?}", error);
+        },
+      };
+    }
+
+    AioResult::Sleep(_) => {},
+
+    AioResult::Send(Err(error)) => {
+      log_error!("(worker_callback) Async SEND failed: {:?}", error);
+    },
+
+    AioResult::Recv(Err(error)) => {
+      log_error!("(worker_callback) Async RECV failed: {:?}", error);
+    },
+  };
+}
+
+fn main_sync() -> Result<(), Box<dyn Error + 'static>> {
+  log_info!("Starting server {} at {}", VERSION, *SERVICE_URL);
+  log_info!("NUM_WALK={}", *NUM_WALK);
+
+  let mut multi_graph = AugMultiGraph::new()?;
+
+  let s = Socket::new(Protocol::Rep0)?;
+
+  s.listen(&SERVICE_URL)?;
+
+  loop {
+    let request : Message = s.recv()?;
+    let reply   : Vec<u8> = process(&mut multi_graph, request);
+    let _ = s.send(reply.as_slice()).map_err(|(_, e)| e)?;
+  }
+}
+
+fn main_async(threads : usize) -> Result<(), Box<dyn Error + 'static>> {
+  log_info!("Starting server {} at {}, {} threads", VERSION, *SERVICE_URL, threads);
+  log_info!("NUM_WALK={}", *NUM_WALK);
+
+  let multi_graph = Arc::<Mutex<AugMultiGraph>>::new(Mutex::<AugMultiGraph>::new(AugMultiGraph::new()?));
+
+  let s = Socket::new(Protocol::Rep0)?;
+
+  let workers : Vec<_> = (0..threads)
+    .map(|_| {
+      let ctx                = Context::new(&s)?;
+      let ctx_cloned         = ctx.clone();
+      let multi_graph_cloned = multi_graph.clone();
+      let aio = Aio::new(move |aio, res| {
+        worker_callback(
+          multi_graph_cloned.clone(),
+          aio,
+          &ctx_cloned,
+          res
+        );
+      })?;
+      Ok((aio, ctx))
+    })
+    .collect::<Result<_, nng::Error>>()?;
+
+  s.listen(&SERVICE_URL)?;
+
+  for (a, c) in &workers {
+    c.recv(a)?;
+  }
+
+  thread::sleep(Duration::from_secs(60 * 60 * 24 * 365)); // 1 year
+
+  Ok(())
+}
+
+fn main() -> Result<(), Box<dyn Error + 'static>> {
+  ctrlc::set_handler(move || {
+    println!("");
+    std::process::exit(0)
+  })?;
+
+  if *THREADS > 1 {
+    main_async(*THREADS)
+  } else {
+    main_sync()
   }
 }
