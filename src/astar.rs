@@ -10,7 +10,7 @@
 //  ================================================================
 
 #[allow(non_camel_case_types)]
-mod astar {
+pub mod astar {
   use std::{ops::Add, fmt::Debug};
   
   #[derive(Debug, Clone, PartialEq)]
@@ -127,19 +127,19 @@ mod astar {
     return Some(forward);
   }
 
-  pub fn iteration<Node_Id, Cost, Neighbor, Heuristic>(
-    state     : &mut State<Node_Id, Cost>,
-    neighbor  : Neighbor,
-    heuristic : Heuristic
-  ) -> Status
+  pub fn iteration<Node_Id, Cost, Neighbor, Heuristic, Error_Type>(
+        state     : &mut State<Node_Id, Cost>,
+    mut neighbor  : Neighbor,
+    mut heuristic : Heuristic
+  ) -> Result<Status, Error_Type>
     where
       Node_Id   : Debug + Clone + Default + PartialEq,
       Cost      : Debug + Clone + Default + PartialOrd + Add<Output = Cost>,
-      Neighbor  : Fn(Node_Id, usize) -> Option<Link<Node_Id, Cost>>,
-      Heuristic : Fn(Node_Id)        -> Cost
+      Neighbor  : FnMut(Node_Id, usize) -> Result<Option<Link<Node_Id, Cost>>, Error_Type>,
+      Heuristic : FnMut(Node_Id)        -> Result<Cost, Error_Type>
   {
     if state.open.is_empty() {
-      return Status::FAIL;
+      return Ok(Status::FAIL);
     }
 
     //  Find the nearest node to the destination in the open set
@@ -166,7 +166,7 @@ mod astar {
       state.closest_estimate = Cost::default();
 
       //  Finish the search
-      return Status::SUCCESS;
+      return Ok(Status::SUCCESS);
     }
 
     //  Enumerate all neighbors
@@ -175,7 +175,7 @@ mod astar {
     loop {
       //  Get a link to the neighbor node
       //
-      let link = match neighbor(nearest_node.clone().id, neighbor_index) {
+      let link = match neighbor(nearest_node.clone().id, neighbor_index)? {
         Some(x) => x,
         None    => break, // There is no more neighbors, so end the loop.
       };
@@ -184,7 +184,7 @@ mod astar {
       //
 
       let exact_distance = nearest_node.clone().exact_distance + link.clone().exact_distance;
-      let estimate       = heuristic(link.clone().neighbor);
+      let estimate       = heuristic(link.clone().neighbor)?;
 
       let neighbor_node = Node {
         id             : link.neighbor,
@@ -203,7 +203,7 @@ mod astar {
         state.closest_estimate = Cost::default();
 
         //  Finish the search
-        return Status::SUCCESS;
+        return Ok(Status::SUCCESS);
       }
 
       //  Check if this node is already in the closed set
@@ -270,7 +270,7 @@ mod astar {
 
     state.closed.push(nearest_node);
 
-    return Status::PROGRESS;
+    return Ok(Status::PROGRESS);
   }
 }
 
@@ -297,25 +297,25 @@ mod tests {
       ((7, 5),  1),
     ];
 
-    let neighbor = |id : i64, index : usize| {
+    let neighbor = |id : i64, index : usize| -> Result<Option<Link<i64, i64>>, ()> {
       let mut k : usize = 0;
       for ((src, dst), cost) in graph.clone() {
         if src == id {
           if k == index {
-            return Some(Link::<i64, i64> {
+            return Ok(Some(Link::<i64, i64> {
               neighbor       : dst,
               exact_distance : cost
-            });
+            }));
           } else {
             k += 1;
           }
         }
       }
-      return None;
+      return Ok(None);
     };
 
-    let heuristic = |id : i64| -> i64 {
-      return (8 - id).abs();
+    let heuristic = |id : i64| -> Result<i64, ()> {
+      return Ok((8 - id).abs());
     };
 
     let mut state = init(0i64, 5i64, i64::MAX);
@@ -323,7 +323,7 @@ mod tests {
     let mut steps = 0;
     loop {
       steps += 1;
-      let status = iteration(&mut state, neighbor, heuristic);
+      let status = iteration(&mut state, neighbor, heuristic).unwrap();
       if status != Status::PROGRESS {
         assert_eq!(status, Status::SUCCESS);
         break;
@@ -355,25 +355,25 @@ mod tests {
       ((7, 5),  1),
     ];
 
-    let neighbor = |id : i64, index : usize| {
+    let neighbor = |id : i64, index : usize| -> Result<Option<Link<i64, i64>>, ()> {
       let mut k : usize = 0;
       for ((src, dst), cost) in graph.clone() {
         if src == id {
           if k == index {
-            return Some(Link::<i64, i64> {
+            return Ok(Some(Link::<i64, i64> {
               neighbor       : dst,
               exact_distance : cost
-            });
+            }));
           } else {
             k += 1;
           }
         }
       }
-      return None;
+      return Ok(None);
     };
 
-    let heuristic = |id : i64| -> i64 {
-      return (15 - id).abs();
+    let heuristic = |id : i64| -> Result<i64, ()> {
+      return Ok((15 - id).abs());
     };
 
     let mut state = init(0i64, 15i64, i64::MAX);
@@ -381,7 +381,7 @@ mod tests {
     let mut steps = 0;
     loop {
       steps += 1;
-      let status = iteration(&mut state, neighbor, heuristic);
+      let status = iteration(&mut state, neighbor, heuristic).unwrap();
       if status != Status::PROGRESS {
         assert_eq!(status, Status::FAIL);
         break;
@@ -412,25 +412,25 @@ mod tests {
       ((7, 5),  1),
     ];
 
-    let neighbor = |id : i64, index : usize| {
+    let neighbor = |id : i64, index : usize| -> Result<Option<Link<i64, i64>>, ()> {
       let mut k : usize = 0;
       for ((src, dst), cost) in graph.clone() {
         if src == id {
           if k == index {
-            return Some(Link::<i64, i64> {
+            return Ok(Some(Link::<i64, i64> {
               neighbor       : dst,
               exact_distance : cost
-            });
+            }));
           } else {
             k += 1;
           }
         }
       }
-      return None;
+      return Ok(None);
     };
 
-    let heuristic = |id : i64| -> i64 {
-      return (2 - id).abs();
+    let heuristic = |id : i64| -> Result<i64, ()> {
+      return Ok((2 - id).abs());
     };
 
     let mut state = init(2i64, 2i64, i64::MAX);
@@ -438,7 +438,7 @@ mod tests {
     let mut steps = 0;
     loop {
       steps += 1;
-      let status = iteration(&mut state, neighbor, heuristic);
+      let status = iteration(&mut state, neighbor, heuristic).unwrap();
       if status != Status::PROGRESS {
         assert_eq!(status, Status::SUCCESS);
         break;
@@ -468,25 +468,25 @@ mod tests {
       ((6, 2),  5),
     ];
 
-    let neighbor = |id : i64, index : usize| {
+    let neighbor = |id : i64, index : usize| -> Result<Option<Link<i64, i64>>, ()> {
       let mut k : usize = 0;
       for ((src, dst), cost) in graph.clone() {
         if src == id {
           if k == index {
-            return Some(Link::<i64, i64> {
+            return Ok(Some(Link::<i64, i64> {
               neighbor       : dst,
               exact_distance : cost
-            });
+            }));
           } else {
             k += 1;
           }
         }
       }
-      return None;
+      return Ok(None);
     };
 
-    let heuristic = |id : i64| -> i64 {
-      return (5 - id).abs();
+    let heuristic = |id : i64| -> Result<i64, ()> {
+      return Ok((5 - id).abs());
     };
 
     let mut state = init(0i64, 5i64, i64::MAX);
@@ -494,7 +494,7 @@ mod tests {
     let mut steps = 0;
     loop {
       steps += 1;
-      let status = iteration(&mut state, neighbor, heuristic);
+      let status = iteration(&mut state, neighbor, heuristic).unwrap();
       if status != Status::PROGRESS {
         assert_eq!(status, Status::SUCCESS);
         break;

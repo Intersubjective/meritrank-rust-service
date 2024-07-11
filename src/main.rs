@@ -18,13 +18,12 @@ use std::string::ToString;
 use std::error::Error;
 use petgraph::visit::EdgeRef;
 use petgraph::graph::{DiGraph, NodeIndex};
-// use petgraph::algo::astar;
 use nng::{Aio, AioResult, Context, Message, Protocol, Socket};
 use simple_pagerank::Pagerank;
 use meritrank::{MeritRank, Graph, IntMap, Weight, NodeId, Neighbors};
 use ctrlc;
 use chrono;
-use crate::astar::*;
+use crate::astar::astar::*;
 
 //  ================================================================
 //
@@ -730,29 +729,68 @@ impl AugMultiGraph {
       }
     }
 
-    if ego_id != focus_id {
+    if ego_id == focus_id {
+      log_trace!("ego is same as focus");
+    } else {
       log_trace!("search shortest path");
 
-      // let (_, ego_to_focus) =
-      //   astar(
-      //     &self.graph_from(context)?.graph,
-      //     ego_id,
-      //     |id| id == focus_id,
-      //     |edge| {
-      //       // cost is inverted edge weight
-      //       let weight = *edge.weight();
-      //       if abs(weight) > 0.0001 {
-      //         1.0 / weight
-      //       } else {
-      //         1_000_000_000.0
-      //       }
-      //     },
-      //     |id| abs(id - focus_id) // ad hok cost heuristic
-      //   ).unwrap_or((0, vec![ego_id]));
+      let graph_cloned = self.graph_from(context)?.graph.clone();
 
-      // let ego_to_focus = &self.graph_from(context)?.graph.shortest_path(ego_id, focus_id).unwrap_or(vec![ego_id]);
+      //  ================================
+      //
+      //    A* search
+      //
 
-      let ego_to_focus = vec![ego_id];
+      let neighbor = |node : NodeId, index : usize| -> Result<Option<Link<NodeId, Weight>>, Box<dyn Error + 'static>> {
+        let v : Vec<_> = graph_cloned.neighbors(node).into_iter().skip(index).take(1).collect();
+        if v.is_empty() {
+          Ok(None)
+        } else {
+          let n = v[0];
+          let w = graph_cloned.edge_weight(node, n).ok_or("Got invalid edge")?;
+          Ok(Some(
+            Link::<NodeId, Weight> {
+              neighbor       : n,
+              exact_distance : if w.abs() < 0.001 { 1_000_000.0 } else { 1.0 / w },
+            }
+          ))
+        }
+      };
+
+      let heuristic = |node : NodeId| -> Result<Weight, Box<dyn Error + 'static>> {
+        //  ad hok
+        Ok(((node as i64) - (focus_id as i64)).abs() as f64)
+      };
+
+      let mut astar_state = init(ego_id, focus_id, Weight::MAX);
+
+      let mut status = Status::PROGRESS;
+      let mut count  = 0;
+
+      //  Do 10000 iterations max
+      //
+
+      for _ in 0..10000 {
+        count += 1;
+        status = iteration(&mut astar_state, neighbor, heuristic)?;
+        if status != Status::PROGRESS {
+          break;
+        }
+      }
+
+      log_trace!("did {} A* iterations", count);
+
+      if status == Status::SUCCESS {
+        log_trace!("path found");
+      } else if status == Status::PROGRESS {
+        log_error!("Unable to find a path from {} to {}", ego_id, focus_id);
+      } else if status == Status::FAIL {
+        log_error!("Path does not exist from {} to {}", ego_id, focus_id);
+      }
+
+      let ego_to_focus = path(&mut astar_state).ok_or("Unable to build a path")?;
+
+      //  ================================
 
       let mut edges = Vec::<(NodeId, NodeId, Weight)>::new();
       edges.reserve_exact(ego_to_focus.len() - 1);
@@ -842,158 +880,6 @@ impl AugMultiGraph {
     let result : Vec<_>  = edge_names?.into_iter().skip(index as usize).take(count as usize).collect();
     let v      : Vec<u8> = rmp_serde::to_vec(&result)?;
     Ok(v)
-    //
-    //  ================================================================
-    //
-
-    /*
-    let focus_id = self.node_id_from_name(focus)?;
-
-    let focus_vector : Vec<(NodeId, NodeId, Weight)> =
-      self.graph_from(context)?
-        .neighbors_weighted(focus_id, Neighbors::All).ok_or("Unable to get neighbors")?.iter()
-        .map(|(target_id, weight)| (focus_id, *target_id, *weight))
-        .collect();
-
-    let mut copy = Graph::new();
-
-    for (a_id, b_id, w_ab) in focus_vector {
-      let b_kind = self.node_info_from_id(b_id)?.kind;
-
-      if b_kind == NodeKind::User {
-        if positive_only {
-          let score = match self.graph_from(context)?.get_node_score(a_id, b_id) {
-            Ok(x) => x,
-            _ => {
-              log_warning!("(read_graph) Node scores recalculation for {}", a_id);
-              let graph = self.graph_from(context)?;
-              graph.calculate(a_id, *NUM_WALK)?;
-              graph.get_node_score(a_id, b_id)?
-            }
-          };
-
-          if score <= 0f64 {
-            continue;
-          }
-        }
-
-        let _ = copy.upsert_edge_with_nodes(
-          a_id, NodeKind::Unknown,
-          b_id, NodeKind::Unknown,
-          w_ab
-        )?;
-      } else if b_kind == NodeKind::Comment || b_kind == NodeKind::Beacon {
-        let v_b : Vec<(NodeId, NodeId, Weight)> =
-          self.graph_from(context)?
-            .neighbors_weighted(b_id, Neighbors::All).ok_or("Unable to get neighbors")?.iter()
-            .map(|(target_id, weight)| (b_id, *target_id, *weight))
-            .collect();
-
-        for (_, c_id, w_bc) in v_b {
-          if positive_only && w_bc <= 0.0f64 {
-            continue;
-          }
-          if c_id == a_id || c_id == b_id {
-            continue;
-          }
-
-          let c_kind = self.node_info_from_id(c_id)?.kind;
-
-          if c_kind != NodeKind::User {
-            continue;
-          }
-
-          let w_ac = w_ab * w_bc * (if w_ab < 0.0f64 && w_bc < 0.0f64 { -1.0f64 } else { 1.0f64 });
-          let _ = copy.upsert_edge_with_nodes(
-            a_id, NodeKind::Unknown,
-            c_id, NodeKind::Unknown,
-            w_ac
-          )?;
-        }
-      }
-    }
-
-    let neighbors : Vec<(EdgeIndex, NodeIndex, NodeId)> = copy.outgoing(focus_id);
-    let ego_id = self.node_id_from_name(ego)?;
-
-    let mut sorted = Vec::<(Weight, (EdgeIndex, NodeIndex))>::new();
-    sorted.reserve_exact(neighbors.len());
-
-    for (edge_index, node_index, node_id) in neighbors {
-      let weight = match self.graph_from(context)?.get_node_score(ego_id, node_id) {
-        Ok(x) => x,
-        _     => {
-          log_warning!("(read_graph) Node scores recalculation for {}", ego_id);
-          let graph = self.graph_from(context)?;
-          graph.calculate(ego_id, *NUM_WALK)?;
-          graph.get_node_score(ego_id, node_id)?
-        }
-      };
-      sorted.push((weight, (edge_index, node_index)));
-    }
-
-    sorted.sort_by(|(a, _), (b, _)| a.total_cmp(b));
-
-    let limited : Vec<(EdgeIndex, NodeIndex)> =
-      sorted.iter()
-        .map(|(_, tuple)| *tuple)
-        .collect();
-
-    for (_edge_index, node_index) in limited {
-      let node_id = copy.index2node(node_index);
-      copy.remove_edge(ego_id, node_id);
-    }
-
-    let path: Vec<NodeId> =
-      copy
-        .shortest_path(ego_id, focus_id)
-        .unwrap_or(Vec::new());
-
-    let v3 : Vec<&NodeId> =
-      path
-        .iter()
-        .collect::<Vec<&NodeId>>(); // was: (3)
-
-    if let Some((&a, &b, &c)) = v3.clone().into_iter().collect_tuple() {
-      let a_kind = self.node_info_from_id(a)?.kind;
-      let b_kind = self.node_info_from_id(b)?.kind;
-
-      if b_kind == NodeKind::Comment || b_kind == NodeKind::Beacon {
-        let w_ab = copy.edge_weight(a, b).ok_or("Unable to get edge weight")?;
-        let w_bc = copy.edge_weight(b, c).ok_or("Unable to get edge weight")?;
-
-        let w_ac: f64 = w_ab * w_bc * (if w_ab < 0.0f64 && w_bc < 0.0f64 { -1.0f64 } else { 1.0f64 });
-        copy.upsert_edge(a, c, w_ac)?;
-      } else if a_kind == NodeKind::User {
-        let weight = copy.edge_weight(a, b).ok_or("Unable to get edge weight")?;
-        copy.upsert_edge(a, b, weight)?;
-      }
-    } else if let Some((&a, &b)) = v3.clone().into_iter().collect_tuple() {
-      let weight = copy.edge_weight(a, b).ok_or("Unable to get edge weight")?;
-      copy.upsert_edge(a, b, weight)?;
-    } else if v3.len() == 1 {
-    } else if v3.is_empty() {
-      copy.add_node(focus_id, NodeKind::Unknown);
-    } else {
-      return Err("Gravity graph failure".into());
-    }
-
-    let edges : Result<Vec<(&str, &str, Weight)>, Box<dyn Error + 'static>> =
-      copy.all().1
-        .iter()
-        .map(|(n1, n2, weight)| {
-          Ok((
-            self.node_info_from_id(*n1)?.name.as_str(),
-            self.node_info_from_id(*n2)?.name.as_str(),
-            *weight
-          ))
-        })
-        .collect();
-
-    let result : Vec<_>  = edges?.into_iter().skip(index as usize).take(count as usize).collect();
-    let v      : Vec<u8> = rmp_serde::to_vec(&result)?;
-    Ok(v)
-    */
   }
 
   fn read_connected(
