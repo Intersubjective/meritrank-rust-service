@@ -12,7 +12,7 @@
 #[allow(non_camel_case_types)]
 pub mod astar {
   use std::{ops::Add, fmt::Debug};
-  
+
   #[derive(Debug, Clone, PartialEq)]
   pub enum Status {
     PROGRESS,
