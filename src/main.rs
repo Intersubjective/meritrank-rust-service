@@ -16,7 +16,9 @@ use std::time::Duration;
 use std::env::var;
 use std::string::ToString;
 use std::error::Error;
-use petgraph::graph::{EdgeIndex, NodeIndex};
+use petgraph::visit::EdgeRef;
+use petgraph::graph::{DiGraph, NodeIndex};
+// use petgraph::algo::astar;
 use nng::{Aio, AioResult, Context, Message, Protocol, Socket};
 use simple_pagerank::Pagerank;
 use meritrank::{MeritRank, Graph, IntMap, Weight, NodeId, Neighbors};
@@ -244,13 +246,13 @@ impl AugMultiGraph {
         self.add_context_if_does_not_exist("")?;
 
         log_trace!("add node in NULL: {}", node_id);
-        self.mut_graph_from_context("")?.add_node(node_id, ());
+        self.graph_from("")?.add_node(node_id, ());
       }
-      
+
       self.add_context_if_does_not_exist(context)?;
-      
+
       log_trace!("add node in {}: {}", context, node_id);
-      self.mut_graph_from_context(context)?.add_node(node_id, ());
+      self.graph_from(context)?.add_node(node_id, ());
 
       Ok(node_id)
     }
@@ -265,13 +267,15 @@ impl AugMultiGraph {
     Ok(())
   }
 
-  fn mut_graph_from_context(&mut self, context : &str) -> Result<&mut MeritRank<()>, Box<dyn Error + 'static>> {
-    log_verbose!("mut_graph_from_context");
+  //  Get mutable graph from a context
+  //
+  fn graph_from(&mut self, context : &str) -> Result<&mut MeritRank<()>, Box<dyn Error + 'static>> {
+    log_verbose!("graph_from");
 
     match self.contexts.get_mut(context) {
       Some(graph) => Ok(graph),
       None        => {
-        log_error!("(mut_graph_from_context) Context does not exist: {}", context);
+        log_error!("(graph_from) Context does not exist: `{}`", context);
         Err("Context does not exist".into())
       },
     }
@@ -289,22 +293,22 @@ impl AugMultiGraph {
     if context.is_empty() {
       self.add_context_if_does_not_exist("")?;
       log_trace!("add edge in NULL: {} -> {} for {}", src, dst, amount);
-      self.mut_graph_from_context("")?.add_edge(src, dst, amount);
+      self.graph_from("")?.add_edge(src, dst, amount);
     } else {
       self.add_context_if_does_not_exist("")?;
       self.add_context_if_does_not_exist(context)?;
 
       //  This doesn't make any sense but it's Rust.
 
-      let null_weight = self.mut_graph_from_context("")?     .get_edge(src, dst).unwrap_or(0.0);
-      let old_weight  = self.mut_graph_from_context(context)?.get_edge(src, dst).unwrap_or(0.0);
+      let null_weight = self.graph_from("")?     .get_edge(src, dst).unwrap_or(0.0);
+      let old_weight  = self.graph_from(context)?.get_edge(src, dst).unwrap_or(0.0);
       let delta       = null_weight + amount - old_weight;
 
       log_trace!("add edge in NULL: {} -> {} for {}", src, dst, delta);
-      self.mut_graph_from_context("")?.add_edge(src, dst, delta);
+      self.graph_from("")?.add_edge(src, dst, delta);
 
       log_trace!("add edge in {}: {} -> {} for {}", context, src, dst, amount);
-      self.mut_graph_from_context(context)?.add_edge(src, dst, amount);
+      self.graph_from(context)?.add_edge(src, dst, amount);
     }
 
     Ok(())
@@ -321,7 +325,7 @@ impl AugMultiGraph {
     log_verbose!("connected_nodes");
 
     let edge_ids : Vec<(NodeId, NodeId)> =
-      self.mut_graph_from_context(context)?
+      self.graph_from(context)?
         .neighbors_weighted(ego, Neighbors::All).ok_or("Node does not exist")?.iter()
         .map(|(dst_id, _weight)| (
           ego,
@@ -357,12 +361,12 @@ impl AugMultiGraph {
 
     Ok(res?)
   }
-  
+
   fn recalculate_all(&mut self, num_walk : usize) -> Result<(), Box<dyn Error + 'static>> {
     log_verbose!("recalculate_all");
 
     let infos = self.node_infos.clone();
-    let graph = self.mut_graph_from_context("")?;
+    let graph = self.graph_from("")?;
 
     for id in 0..infos.len() {
       if infos[id].kind == NodeKind::User {
@@ -472,7 +476,7 @@ impl AugMultiGraph {
     let ego_id    = self.node_id_from_name(ego)?;
     let target_id = self.node_id_from_name(target)?;
 
-    let graph = self.mut_graph_from_context(context)?;
+    let graph = self.graph_from(context)?;
 
     let w = match graph.get_node_score(ego_id, target_id) {
       Ok(x) => x,
@@ -515,11 +519,11 @@ impl AugMultiGraph {
 
     let node_id = self.node_id_from_name(ego)?;
 
-    let ranks = match self.mut_graph_from_context(context)?.get_ranks(node_id, None) {
+    let ranks = match self.graph_from(context)?.get_ranks(node_id, None) {
       Ok(x) => x,
       _     => {
         log_warning!("(read_scores) Node scores recalculation for {}", node_id);
-        let graph = self.mut_graph_from_context(context)?;
+        let graph = self.graph_from(context)?;
         let _ = graph.calculate(node_id, *NUM_WALK)?;
         graph.get_ranks(node_id, None)?
       }
@@ -567,8 +571,8 @@ impl AugMultiGraph {
           Ok((target_id, target_kind, weight)) =>
             if hide_personal {
               if target_kind == NodeKind::Comment || target_kind == NodeKind::Beacon {
-                match self.mut_graph_from_context(context) {
-                  Ok(graph) => 
+                match self.graph_from(context) {
+                  Ok(graph) =>
                     if graph.get_edge(target_id, node_id).is_some() {
                       None
                     } else {
@@ -652,7 +656,7 @@ impl AugMultiGraph {
 
     let id = self.node_id_from_name(node)?;
 
-    for n in self.mut_graph_from_context(context)?.neighbors_weighted(id, Neighbors::All).ok_or("Unable to get neighbors")?.keys() {
+    for n in self.graph_from(context)?.neighbors_weighted(id, Neighbors::All).ok_or("Unable to get neighbors")?.keys() {
       self.set_edge(context, id, *n, 0.0)?;
     }
 
@@ -669,11 +673,173 @@ impl AugMultiGraph {
     count         : u32
   ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
     log_info!("CMD read_graph");
-    
+
+    let ego_id   = self.node_id_from_name(ego)?;
+    let focus_id = self.node_id_from_name(focus)?;
+
+    let focus_neighbors = self.graph_from(context)?.neighbors_weighted(focus_id, Neighbors::All).ok_or("Focus has no neighbors")?;
+
+    let mut indices  = HashMap::<NodeId, NodeIndex>::new();
+    let mut ids      = HashMap::<NodeIndex, NodeId>::new();
+    let mut im_graph = DiGraph::<NodeId, Weight>::new();
+
+    {
+      let index = im_graph.add_node(focus_id);
+      indices.insert(focus_id, index);
+      ids.insert(index, focus_id);
+    }
+
+    log_trace!("enumerate focus neighbors");
+
+    for (dst_id, focus_dst_weight) in focus_neighbors {
+      let dst_kind = self.node_info_from_id(dst_id)?.kind;
+
+      if dst_kind == NodeKind::User {
+        if positive_only && self.graph_from(context)?.get_edge(ego_id, dst_id).unwrap_or(0.0) <= 0.0 {
+          continue;
+        }
+
+        if !indices.contains_key(&dst_id) {
+          let index = im_graph.add_node(focus_id);
+          indices.insert(dst_id, index);
+          ids.insert(index, dst_id);
+        }
+        im_graph.add_edge(*indices.get(&focus_id).ok_or("Got invalid node")?, *indices.get(&dst_id).ok_or("Got invalid node")?, focus_dst_weight);
+      } else if dst_kind == NodeKind::Comment || dst_kind == NodeKind::Beacon {
+        let dst_neighbors = match self.graph_from(context)?.neighbors_weighted(dst_id, Neighbors::All) {
+          Some(x) => x,
+          _       => {
+            continue;
+          }
+        };
+
+        for (ngh_id, dst_ngh_weight) in dst_neighbors {
+          if (positive_only && dst_ngh_weight <= 0.0) || ngh_id == focus_id || self.node_info_from_id(ngh_id)?.kind != NodeKind::User {
+            continue;
+          }
+
+          let focus_ngh_weight = focus_dst_weight * dst_ngh_weight * if focus_dst_weight < 0.0 && dst_ngh_weight < 0.0 { -1.0 } else { 1.0 };
+          if !indices.contains_key(&ngh_id) {
+            let index = im_graph.add_node(ngh_id);
+            indices.insert(ngh_id, index);
+            ids.insert(index, ngh_id);
+          }
+          im_graph.add_edge(*indices.get(&focus_id).ok_or("Got invalid node")?, *indices.get(&ngh_id).ok_or("Got invalid node")?, focus_ngh_weight);
+        }
+      }
+    }
+
+    if ego_id != focus_id {
+      log_trace!("search shortest path");
+
+      // let (_, ego_to_focus) =
+      //   astar(
+      //     &self.graph_from(context)?.graph,
+      //     ego_id,
+      //     |id| id == focus_id,
+      //     |edge| {
+      //       // cost is inverted edge weight
+      //       let weight = *edge.weight();
+      //       if abs(weight) > 0.0001 {
+      //         1.0 / weight
+      //       } else {
+      //         1_000_000_000.0
+      //       }
+      //     },
+      //     |id| abs(id - focus_id) // ad hok cost heuristic
+      //   ).unwrap_or((0, vec![ego_id]));
+
+      // let ego_to_focus = &self.graph_from(context)?.graph.shortest_path(ego_id, focus_id).unwrap_or(vec![ego_id]);
+
+      let ego_to_focus = vec![ego_id];
+
+      let mut edges = Vec::<(NodeId, NodeId, Weight)>::new();
+      edges.reserve_exact(ego_to_focus.len() - 1);
+
+      log_trace!("process shortest path");
+
+      for k in 0..ego_to_focus.len()-1 {
+        let a = ego_to_focus[k];
+        let b = ego_to_focus[k + 1];
+
+        let a_kind = self.node_info_from_id(a)?.kind;
+        let b_kind = self.node_info_from_id(b)?.kind;
+
+        let a_b_weight = self.graph_from(context)?.get_edge(a, b).ok_or("Got invalid edge")?;
+
+        if k + 2 == ego_to_focus.len() {
+          if a_kind == NodeKind::User {
+            edges.push((a, b, a_b_weight));
+          }
+        } else if b_kind != NodeKind::User {
+          let c = ego_to_focus[k + 2];
+          let b_c_weight = self.graph_from(context)?.get_edge(b, c).ok_or("Got invalid edge")?;
+          let a_c_weight = a_b_weight * b_c_weight * if a_b_weight < 0.0 && b_c_weight < 0.0 { -1.0 } else { 1.0 };
+          edges.push((a, c, a_c_weight));
+        } else if a_kind == NodeKind::User {
+          edges.push((a, b, a_b_weight));
+        }
+      }
+
+      log_trace!("add path to the graph");
+
+      for (src, dst, weight) in edges {
+        if !indices.contains_key(&src) {
+          let index = im_graph.add_node(src);
+          indices.insert(src, index);
+          ids.insert(index, src);
+        }
+        if !indices.contains_key(&dst) {
+          let index = im_graph.add_node(dst);
+          indices.insert(dst, index);
+          ids.insert(index, dst);
+        }
+        im_graph.add_edge(*indices.get(&src).ok_or("Got invalid node")?, *indices.get(&dst).ok_or("Got invalid node")?, weight);
+      }
+    }
+
+    log_trace!("remove self references");
+
+    for (_, src_index) in indices.iter() {
+      let neighbors : Vec<_> =
+        im_graph.edges(*src_index)
+          .map(|edge| (edge.target(), edge.id()))
+          .collect();
+
+      for (dst_index, edge_id) in neighbors {
+        if *src_index == dst_index {
+          im_graph.remove_edge(edge_id);
+        }
+      }
+    }
+
+    let mut edge_ids = Vec::<(NodeId, NodeId, Weight)>::new();
+    edge_ids.reserve_exact(indices.len() * 2); // ad hok
+
+    log_trace!("build final array");
+
+    for (_, src_index) in indices {
+      for edge in im_graph.edges(src_index) {
+        edge_ids.push((
+          *ids.get(&src_index).ok_or("Got invalid node")?,
+          *ids.get(&edge.target()).ok_or("Got invalid node")?,
+          *edge.weight()
+        ));
+      }
+    }
+
+    let result : Vec<_>  = edge_ids.into_iter().skip(index as usize).take(count as usize).collect();
+    let v      : Vec<u8> = rmp_serde::to_vec(&result)?;
+    Ok(v)
+    //
+    //  ================================================================
+    //
+
+    /*
     let focus_id = self.node_id_from_name(focus)?;
 
     let focus_vector : Vec<(NodeId, NodeId, Weight)> =
-      self.mut_graph_from_context(context)?
+      self.graph_from(context)?
         .neighbors_weighted(focus_id, Neighbors::All).ok_or("Unable to get neighbors")?.iter()
         .map(|(target_id, weight)| (focus_id, *target_id, *weight))
         .collect();
@@ -685,11 +851,11 @@ impl AugMultiGraph {
 
       if b_kind == NodeKind::User {
         if positive_only {
-          let score = match self.mut_graph_from_context(context)?.get_node_score(a_id, b_id) {
+          let score = match self.graph_from(context)?.get_node_score(a_id, b_id) {
             Ok(x) => x,
             _ => {
               log_warning!("(read_graph) Node scores recalculation for {}", a_id);
-              let graph = self.mut_graph_from_context(context)?;
+              let graph = self.graph_from(context)?;
               graph.calculate(a_id, *NUM_WALK)?;
               graph.get_node_score(a_id, b_id)?
             }
@@ -707,7 +873,7 @@ impl AugMultiGraph {
         )?;
       } else if b_kind == NodeKind::Comment || b_kind == NodeKind::Beacon {
         let v_b : Vec<(NodeId, NodeId, Weight)> =
-          self.mut_graph_from_context(context)?
+          self.graph_from(context)?
             .neighbors_weighted(b_id, Neighbors::All).ok_or("Unable to get neighbors")?.iter()
             .map(|(target_id, weight)| (b_id, *target_id, *weight))
             .collect();
@@ -743,11 +909,11 @@ impl AugMultiGraph {
     sorted.reserve_exact(neighbors.len());
 
     for (edge_index, node_index, node_id) in neighbors {
-      let weight = match self.mut_graph_from_context(context)?.get_node_score(ego_id, node_id) {
+      let weight = match self.graph_from(context)?.get_node_score(ego_id, node_id) {
         Ok(x) => x,
         _     => {
           log_warning!("(read_graph) Node scores recalculation for {}", ego_id);
-          let graph = self.mut_graph_from_context(context)?;
+          let graph = self.graph_from(context)?;
           graph.calculate(ego_id, *NUM_WALK)?;
           graph.get_node_score(ego_id, node_id)?
         }
@@ -812,10 +978,11 @@ impl AugMultiGraph {
           ))
         })
         .collect();
-    
+
     let result : Vec<_>  = edges?.into_iter().skip(index as usize).take(count as usize).collect();
     let v      : Vec<u8> = rmp_serde::to_vec(&result)?;
     Ok(v)
+    */
   }
 
   fn read_connected(
@@ -835,7 +1002,7 @@ impl AugMultiGraph {
 
   fn read_nodelist(&self) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
     log_info!("CMD read_nodelist");
-    
+
     let result : Vec<(&str,)> =
       self.node_infos
         .iter()
@@ -859,7 +1026,7 @@ impl AugMultiGraph {
 
       for (dst_id, weight) in
         self
-          .mut_graph_from_context(context)?
+          .graph_from(context)?
           .neighbors_weighted(src_id, Neighbors::All)
           .unwrap_or(IntMap::default())
           .iter()
@@ -888,11 +1055,11 @@ impl AugMultiGraph {
 
     let ego_id = self.node_id_from_name(ego)?;
 
-    let ranks = match self.mut_graph_from_context(context)?.get_ranks(ego_id, None) {
+    let ranks = match self.graph_from(context)?.get_ranks(ego_id, None) {
       Ok(x) => x,
       _     => {
         log_warning!("(read_mutual_scores) Node scores recalculation for {}", ego_id);
-        let graph = self.mut_graph_from_context(context)?;
+        let graph = self.graph_from(context)?;
         graph.calculate(ego_id, *NUM_WALK)?;
         graph.get_ranks(ego_id, None)?
       }
@@ -906,7 +1073,7 @@ impl AugMultiGraph {
       let info = self.node_info_from_id(node)?.clone();
       if score > 0.0 && info.kind == NodeKind::User
       {
-        let graph = self.mut_graph_from_context(context)?;
+        let graph = self.graph_from(context)?;
         v.push((
           info.name,
           score,
@@ -943,7 +1110,7 @@ impl AugMultiGraph {
 impl AugMultiGraph {
   fn reduced_graph(&mut self) -> Result<Vec<(NodeId, NodeId, f64)>, Box<dyn Error + 'static>> {
     log_verbose!("reduced_graph");
-    
+
     let zero = self.find_or_add_node_by_name("", ZERO_NODE.as_str())?;
 
     let users : Vec<NodeId> =
@@ -961,7 +1128,7 @@ impl AugMultiGraph {
     }
 
     for id in users.iter() {
-      self.mut_graph_from_context("")?.calculate(*id, *NUM_WALK)?;
+      self.graph_from("")?.calculate(*id, *NUM_WALK)?;
     }
 
     let edges : Vec<(NodeId, NodeId, Weight)> =
@@ -969,7 +1136,7 @@ impl AugMultiGraph {
         .map(|id| {
           let result : Result<Vec<(NodeId, NodeId, Weight)>, _> =
             self
-              .mut_graph_from_context("")?
+              .graph_from("")?
               .get_ranks(id, None)?
               .into_iter()
               .map(|(node_id, score)| (id, node_id, score))
@@ -1027,7 +1194,7 @@ impl AugMultiGraph {
     log_verbose!("delete_from_zero");
 
     let src_id = self.node_id_from_name(ZERO_NODE.as_str())?;
-    
+
     let edges = match self.connected_nodes("", src_id) {
       Ok(x) => x,
       _     => return Ok(()),

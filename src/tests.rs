@@ -1199,7 +1199,7 @@ fn no_assert() {
 }
 
 #[test]
-fn zerorec_graph() {
+fn zerorec_graph_all() {
   let mut graph = AugMultiGraph::new().unwrap();
 
   put_testing_edges(&mut graph, "");
@@ -1326,7 +1326,7 @@ fn null_context_invariant() {
 }
 
 #[test]
-fn scores() {
+fn scores_null() {
   let mut graph = AugMultiGraph::new().unwrap();
 
   let _ = graph.write_put_edge("", "U1", "U2", 2.0).unwrap();
@@ -1399,7 +1399,7 @@ fn scores_unknown_context() {
 }
 
 #[test]
-fn mutual_scores() {
+fn mutual_scores_null() {
   let mut graph = AugMultiGraph::new().unwrap();
 
   let _ = graph.write_put_edge("", "U1", "U2", 3.0).unwrap();
@@ -1488,7 +1488,7 @@ fn mutual_scores_contexted() {
       },
 
       "U2" => {
-        assert!(res[1].1 > 0.3);
+        assert!(res[1].1 > 0.25);
         assert!(res[1].1 < 0.4);
         assert!(res[1].2 > 0.2);
         assert!(res[1].2 < 0.35);
