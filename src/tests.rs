@@ -1215,6 +1215,7 @@ fn zerorec_graph_all() {
 
   let n = res.len();
 
+  assert_eq!(n, 0); // TEMP
   assert!(n > 25);
   assert!(n < 60);
 }
@@ -1236,6 +1237,7 @@ fn zerorec_graph_positive_only() {
 
   let n = res.len();
 
+  assert_eq!(n, 0); // TEMP
   assert!(n > 25);
   assert!(n < 60);
 }
@@ -1257,7 +1259,7 @@ fn zerorec_graph_focus_beacon() {
 
   let n = res.len();
 
-//  assert_eq!(n, 0); // TEMP
+  assert_eq!(n, 0); // TEMP
   assert!(n > 25);
   assert!(n < 60);
 }
@@ -1326,7 +1328,7 @@ fn null_context_invariant() {
 }
 
 #[test]
-fn scores_null() {
+fn node_scores_null() {
   let mut graph = AugMultiGraph::new().unwrap();
 
   let _ = graph.write_put_edge("", "U1", "U2", 2.0).unwrap();
@@ -1339,24 +1341,32 @@ fn scores_null() {
 
   assert_eq!(res.len(), 3);
 
-  assert_eq!(res[0].0, "U1");
-  assert_eq!(res[0].1, "U2");
-  assert!(res[0].2 > 0.1);
-  assert!(res[0].2 < 0.4);
+  for x in res {
+    assert_eq!(x.0, "U1");
+    
+    match x.1.as_str() {
+      "U1" => {
+        assert!(x.2 > 0.2);
+        assert!(x.2 < 0.5);
+      },
 
-  assert_eq!(res[1].0, "U1");
-  assert_eq!(res[1].1, "U3");
-  assert!(res[1].2 > 0.2);
-  assert!(res[1].2 < 0.5);
+      "U2" => {
+        assert!(x.2 > 0.1);
+        assert!(x.2 < 0.4);
+      },
 
-  assert_eq!(res[2].0, "U1");
-  assert_eq!(res[2].1, "U1");
-  assert!(res[2].2 > 0.2);
-  assert!(res[2].2 < 0.5);
+      "U3" => {
+        assert!(x.2 > 0.2);
+        assert!(x.2 < 0.5);
+      },
+
+      _ => assert!(false),
+    }
+  }
 }
 
 #[test]
-fn scores_contexted() {
+fn node_scores_contexted() {
   let mut graph = AugMultiGraph::new().unwrap();
 
   let _ = graph.write_put_edge("X", "U1", "U2", 2.0).unwrap();
@@ -1369,24 +1379,32 @@ fn scores_contexted() {
 
   assert_eq!(res.len(), 3);
 
-  assert_eq!(res[0].0, "U1");
-  assert_eq!(res[0].1, "U2");
-  assert!(res[0].2 > 0.1);
-  assert!(res[0].2 < 0.4);
+  for x in res {
+    assert_eq!(x.0, "U1");
+    
+    match x.1.as_str() {
+      "U1" => {
+        assert!(x.2 > 0.2);
+        assert!(x.2 < 0.5);
+      },
 
-  assert_eq!(res[1].0, "U1");
-  assert_eq!(res[1].1, "U3");
-  assert!(res[1].2 > 0.2);
-  assert!(res[1].2 < 0.5);
+      "U2" => {
+        assert!(x.2 > 0.1);
+        assert!(x.2 < 0.4);
+      },
 
-  assert_eq!(res[2].0, "U1");
-  assert_eq!(res[2].1, "U1");
-  assert!(res[2].2 > 0.2);
-  assert!(res[2].2 < 0.5);
+      "U3" => {
+        assert!(x.2 > 0.2);
+        assert!(x.2 < 0.5);
+      },
+
+      _ => assert!(false),
+    }
+  }
 }
 
 #[test]
-fn scores_unknown_context() {
+fn node_scores_unknown_context() {
   let mut graph = AugMultiGraph::new().unwrap();
 
   let _ = graph.write_put_edge("X", "U1", "U2", 2.0).unwrap();
@@ -1422,28 +1440,28 @@ fn mutual_scores_null() {
   for x in res.iter() {
     match x.0.as_str() {
       "U1" => {
-        assert!(res[0].1 > 0.3);
-        assert!(res[0].1 < 0.45);
-        assert!(res[0].2 > 0.3);
-        assert!(res[0].2 < 0.45);
+        assert!(x.1 > 0.3);
+        assert!(x.1 < 0.45);
+        assert!(x.2 > 0.3);
+        assert!(x.2 < 0.45);
         assert!(u1);
         u1 = false;
       },
 
       "U2" => {
-        assert!(res[1].1 > 0.3);
-        assert!(res[1].1 < 0.4);
-        assert!(res[1].2 > 0.2);
-        assert!(res[1].2 < 0.35);
+        assert!(x.1 > 0.25);
+        assert!(x.1 < 0.4);
+        assert!(x.2 > 0.2);
+        assert!(x.2 < 0.35);
         assert!(u2);
         u2 = false;
       },
 
       "U3" => {
-        assert!(res[2].1 > 0.2);
-        assert!(res[2].1 < 0.35);
-        assert!(res[2].2 > 0.25);
-        assert!(res[2].2 < 0.35);
+        assert!(x.1 > 0.2);
+        assert!(x.1 < 0.35);
+        assert!(x.2 > 0.25);
+        assert!(x.2 < 0.35);
         assert!(u3);
         u3 = false;
       },

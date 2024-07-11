@@ -4,6 +4,8 @@
 //
 //  ================================================================
 
+mod astar;
+
 #[cfg(test)]
 mod tests;
 
@@ -11,8 +13,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::ops::DerefMut;
 use itertools::Itertools;
-use std::thread;
-use std::time::Duration;
 use std::env::var;
 use std::string::ToString;
 use std::error::Error;
@@ -24,6 +24,7 @@ use simple_pagerank::Pagerank;
 use meritrank::{MeritRank, Graph, IntMap, Weight, NodeId, Neighbors};
 use ctrlc;
 use chrono;
+use crate::astar::*;
 
 //  ================================================================
 //
@@ -828,7 +829,17 @@ impl AugMultiGraph {
       }
     }
 
-    let result : Vec<_>  = edge_ids.into_iter().skip(index as usize).take(count as usize).collect();
+    let edge_names : Result<Vec<(&str, &str, Weight)>, Box<dyn Error + 'static>> =
+      edge_ids
+        .into_iter()
+        .map(|(src_id, dst_id, weight)| {Ok((
+          self.node_info_from_id(src_id)?.name.as_str(),
+          self.node_info_from_id(dst_id)?.name.as_str(),
+          weight
+        ))})
+        .collect();
+
+    let result : Vec<_>  = edge_names?.into_iter().skip(index as usize).take(count as usize).collect();
     let v      : Vec<u8> = rmp_serde::to_vec(&result)?;
     Ok(v)
     //
@@ -1465,6 +1476,7 @@ fn main_async(threads : usize) -> Result<(), Box<dyn Error + 'static>> {
       let ctx                = Context::new(&s)?;
       let ctx_cloned         = ctx.clone();
       let multi_graph_cloned = multi_graph.clone();
+
       let aio = Aio::new(move |aio, res| {
         worker_callback(
           multi_graph_cloned.clone(),
@@ -1473,6 +1485,7 @@ fn main_async(threads : usize) -> Result<(), Box<dyn Error + 'static>> {
           res
         );
       })?;
+
       Ok((aio, ctx))
     })
     .collect::<Result<_, nng::Error>>()?;
@@ -1483,8 +1496,7 @@ fn main_async(threads : usize) -> Result<(), Box<dyn Error + 'static>> {
     c.recv(a)?;
   }
 
-  thread::sleep(Duration::from_secs(60 * 60 * 24 * 365)); // 1 year
-
+  std::thread::park();
   Ok(())
 }
 
