@@ -1,5 +1,6 @@
 //  No context
 pub const CMD_VERSION          : &str = "version";
+pub const CMD_LOG_LEVEL        : &str = "log_level";
 pub const CMD_RESET            : &str = "reset";
 pub const CMD_RECALCULATE_ZERO : &str = "recalculate_zero";
 pub const CMD_NODE_LIST        : &str = "node_list";

@@ -406,6 +406,18 @@ pub fn read_version() -> Result<Vec<u8>, BoxedError> {
   Ok(rmp_serde::to_vec(&s)?)
 }
 
+pub fn write_log_level(log_level : u32) -> Result<Vec<u8>, BoxedError> {
+  log_info!("CMD write_log_level: {}", log_level);
+
+  ERROR  .store(log_level > 0, Ordering::Relaxed);
+  WARNING.store(log_level > 1, Ordering::Relaxed);
+  INFO   .store(log_level > 2, Ordering::Relaxed);
+  VERBOSE.store(log_level > 3, Ordering::Relaxed);
+  TRACE  .store(log_level > 4, Ordering::Relaxed);
+
+  Ok(rmp_serde::to_vec(&())?)
+}
+
 impl AugMultiGraph {
   pub fn read_node_score_null(&mut self, ego : &str, target : &str) -> Result<Vec<u8>, BoxedError> {
     log_info!("CMD read_node_score_null: `{}` `{}`", ego, target);
@@ -1228,13 +1240,17 @@ fn decode_and_handle_request(
       return error!("decode_and_handle_request", "Invalid request: {:?}; decoding error: {}", request, error),
   }
 
-  if !context.is_empty() && (command == CMD_VERSION || command == CMD_RESET || command == CMD_RECALCULATE_ZERO || command == CMD_NODE_SCORE_NULL || command == CMD_SCORES_NULL || command == CMD_NODE_LIST) {
+  if !context.is_empty() && (command == CMD_VERSION || command == CMD_LOG_LEVEL || command == CMD_RESET || command == CMD_RECALCULATE_ZERO || command == CMD_NODE_SCORE_NULL || command == CMD_SCORES_NULL || command == CMD_NODE_LIST) {
     return error!("decode_and_handle_request", "Context should be empty");
   }
 
   if        command == CMD_VERSION {
     if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
       return read_version();
+    }
+  } else if command == CMD_LOG_LEVEL {
+    if let Ok(log_level) = rmp_serde::from_slice(payload.as_slice()) {
+      return write_log_level(log_level);
     }
   } else if command == CMD_RESET {
     if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
