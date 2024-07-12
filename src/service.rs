@@ -1196,20 +1196,23 @@ fn decode_and_handle_request(
 
   let command : &str;
   let context : &str;
-  let payload : &[u8];
+  let payload : Vec<u8>;
 
-  if let Ok((command_value, context_value, payload_value)) = rmp_serde::from_slice(request) {
-    command = command_value;
-    context = context_value;
-    payload = payload_value;
+  match rmp_serde::from_slice(request) {
+    Ok((command_value, context_value, payload_value)) => {    
+      command = command_value;
+      context = context_value;
+      payload = payload_value;
 
-    if context.is_empty() {
-      log_trace!("decoded command `{}` in NULL with payload {:?}", command, payload);
-    } else {
-      log_trace!("decoded command `{}` in `{}` with payload {:?}", command, context, payload);
-    }
-  } else {
-    return Err(format!("Invalid request: {:?}", request).into());
+      if context.is_empty() {
+        log_trace!("decoded command `{}` in NULL with payload {:?}", command, payload);
+      } else {
+        log_trace!("decoded command `{}` in `{}` with payload {:?}", command, context, payload);
+      }
+    },
+
+    Err(error) =>
+      return error!("decode_and_handle_request", "Invalid request: {:?}; decoding error: {}", request, error),
   }
 
   if !context.is_empty() && (command == CMD_VERSION || command == CMD_RESET || command == CMD_RECALCULATE_ZERO || command == CMD_NODE_SCORE_NULL || command == CMD_SCORES_NULL || command == CMD_NODE_LIST) {
@@ -1217,63 +1220,63 @@ fn decode_and_handle_request(
   }
 
   if        command == CMD_VERSION {
-    if payload.is_empty() {
+    if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
       return read_version();
     }
   } else if command == CMD_RESET {
-    if payload.is_empty() {
+    if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
       return multi_graph.write_reset();
     }
   } else if command == CMD_RECALCULATE_ZERO {  
-    if payload.is_empty() {
+    if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
       return multi_graph.write_recalculate_zero();
     }
   } else if command == CMD_NODE_LIST {
-    if let Ok(()) = rmp_serde::from_slice(payload) {
+    if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
       return multi_graph.read_node_list();
     }
   } else if command == CMD_NODE_SCORE_NULL {
-    if let Ok((ego, target)) = rmp_serde::from_slice(payload) {
+    if let Ok((ego, target)) = rmp_serde::from_slice(payload.as_slice()) {
       return multi_graph.read_node_score_null(ego, target);
     }
   } else if command == CMD_SCORES_NULL {
-    if let Ok(ego) = rmp_serde::from_slice(payload) {
+    if let Ok(ego) = rmp_serde::from_slice(payload.as_slice()) {
       return multi_graph.read_scores_null(ego);
     }
   } else if command == CMD_NODE_SCORE {
-    if let Ok((ego, target)) = rmp_serde::from_slice(payload) {
+    if let Ok((ego, target)) = rmp_serde::from_slice(payload.as_slice()) {
       return multi_graph.read_node_score(context, ego, target);
     }
   } else if command == CMD_SCORES {
-    if let Ok((ego, kind, hide_personal, lt, lte, gt, gte, index, count)) = rmp_serde::from_slice(payload) {
+    if let Ok((ego, kind, hide_personal, lt, lte, gt, gte, index, count)) = rmp_serde::from_slice(payload.as_slice()) {
       return multi_graph.read_scores(context, ego, kind, hide_personal, lt, lte, gt, gte, index, count);
     }
   } else if command == CMD_PUT_EDGE {
-    if let Ok((src, dst, amount)) = rmp_serde::from_slice(payload) {
+    if let Ok((src, dst, amount)) = rmp_serde::from_slice(payload.as_slice()) {
       return multi_graph.write_put_edge(context, src, dst, amount);
     }
   } else if command == CMD_DELETE_EDGE {
-    if let Ok((src, dst)) = rmp_serde::from_slice(payload) {
+    if let Ok((src, dst)) = rmp_serde::from_slice(payload.as_slice()) {
       return multi_graph.write_delete_edge(context, src, dst);
     }
   } else if command == CMD_DELETE_NODE {
-    if let Ok(node) = rmp_serde::from_slice(payload) {
+    if let Ok(node) = rmp_serde::from_slice(payload.as_slice()) {
       return multi_graph.write_delete_node(context, node);
     }
   } else if command == CMD_GRAPH {
-    if let Ok((ego, focus, positive_only, index, count)) = rmp_serde::from_slice(payload) {
+    if let Ok((ego, focus, positive_only, index, count)) = rmp_serde::from_slice(payload.as_slice()) {
       return multi_graph.read_graph(context, ego, focus, positive_only, index, count);
     }
   } else if command == CMD_CONNECTED {
-    if let Ok(node) = rmp_serde::from_slice(payload) {
+    if let Ok(node) = rmp_serde::from_slice(payload.as_slice()) {
       return multi_graph.read_connected(context, node);
     }
   } else if command == CMD_EDGES {
-    if payload.is_empty() {
+    if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
       return multi_graph.read_edges(context);
     }
   } else if command == CMD_MUTUAL_SCORES {
-    if let Ok(ego) = rmp_serde::from_slice(payload) {
+    if let Ok(ego) = rmp_serde::from_slice(payload.as_slice()) {
       return multi_graph.read_mutual_scores(context, ego);
     }
   } else {

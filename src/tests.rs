@@ -1194,6 +1194,29 @@ fn put_testing_edges(graph : &mut AugMultiGraph, context : &str) {
 }
 
 #[test]
+fn encoding() {
+  let in_command : String = "foo".into();
+  let in_context : &str = "bar";
+  let in_arg1    : &str = "baz";
+  let in_arg2    : &str = "bus";
+
+  let payload = rmp_serde::to_vec(&(
+    in_command.clone(),
+    in_context,
+    rmp_serde::to_vec(&(in_arg1, in_arg2)).unwrap()
+  )).unwrap();
+
+  let out_command : &str;
+  let out_context : String;
+  let _out_args   : Vec<u8>;
+
+  (out_command, out_context, _out_args) = rmp_serde::from_slice(payload.as_slice()).unwrap();
+
+  assert_eq!(out_command, in_command);
+  assert_eq!(out_context, in_context);
+}
+
+#[test]
 fn no_assert() {
   assert_eq!(meritrank::constants::ASSERT, false);
 }
