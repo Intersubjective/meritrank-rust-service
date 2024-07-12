@@ -1,16 +1,19 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::ops::DerefMut;
+use std::{
+  sync::atomic::{AtomicBool, Ordering},
+  collections::HashMap,
+  sync::{Arc, Mutex},
+  ops::DerefMut,
+  env::var,
+  string::ToString,
+  error::Error,
+  thread
+};
+use chrono;
 use itertools::Itertools;
-use std::env::var;
-use std::string::ToString;
-use std::error::Error;
-use petgraph::visit::EdgeRef;
-use petgraph::graph::{DiGraph, NodeIndex};
 use nng::{Aio, AioResult, Context, Message, Protocol, Socket};
+use petgraph::{visit::EdgeRef, graph::{DiGraph, NodeIndex}};
 use simple_pagerank::Pagerank;
 use meritrank::{MeritRank, Graph, IntMap, NodeId, Neighbors};
-use chrono;
 
 use crate::commands::*;
 use crate::astar::astar::*;
@@ -23,11 +26,11 @@ pub use meritrank::Weight;
 //
 //  ================================================================
 
-pub static ERROR   : bool = true;
-pub static WARNING : bool = true;
-pub static INFO    : bool = true;
-pub static VERBOSE : bool = true;
-pub static TRACE   : bool = true;
+pub static ERROR   : AtomicBool = AtomicBool::new(true);
+pub static WARNING : AtomicBool = AtomicBool::new(true);
+pub static INFO    : AtomicBool = AtomicBool::new(true);
+pub static VERBOSE : AtomicBool = AtomicBool::new(true);
+pub static TRACE   : AtomicBool = AtomicBool::new(true);
 
 const VERSION : &str = match option_env!("CARGO_PKG_VERSION") {
   Some(x) => x,
@@ -73,6 +76,8 @@ lazy_static::lazy_static! {
 //
 //  ================================================================
 
+type BoxedError = Box<dyn Error + 'static>;
+
 #[derive(PartialEq, Eq, Clone, Copy, Default)]
 pub enum NodeKind {
   #[default]
@@ -106,12 +111,17 @@ pub struct AugMultiGraph {
 static LOG_MUTEX : Mutex<()> = Mutex::new(());
 
 fn log_with_time(prefix : &str, message : &str) {
+  let time      = chrono::offset::Local::now();
+  let time_str  = time.format("%Y-%m-%d %H:%M:%S");
+  let millis    = time.timestamp_millis() % 1000;
+  let thread_id = thread::current().id();
+  
   match LOG_MUTEX.lock() {
     Ok(_) => {
-      println!("{:?}  {}{}", chrono::offset::Local::now(), prefix, message);
+      println!("{}.{:03} {:3?}  {}{}", time_str, millis, thread_id, prefix, message);
     },
     _ => {
-      println!("{:?}  LOG MUTEX FAILED", chrono::offset::Local::now());
+      println!("{}.{:03} {:3?}  LOG MUTEX FAILED", time_str, millis, thread_id);
     },
   };
 }
@@ -119,7 +129,7 @@ fn log_with_time(prefix : &str, message : &str) {
 
 macro_rules! log_error {
   ($($arg:expr),*) => {
-    if ERROR {
+    if ERROR.load(Ordering::Relaxed) {
       log_with_time("ERROR   ", format!($($arg),*).as_str());
     }
   };
@@ -128,7 +138,7 @@ macro_rules! log_error {
 macro_rules! error {
   ($func:expr, $($arg:expr),*) => {
     {
-      if ERROR {
+      if ERROR.load(Ordering::Relaxed) {
         log_with_time(format!("ERROR   ({}) ", $func).as_str(), format!($($arg),*).as_str());
       }
       Err(format!($($arg),*).into())
@@ -138,7 +148,7 @@ macro_rules! error {
 
 macro_rules! log_warning {
   ($($arg:expr),*) => {
-    if WARNING {
+    if WARNING.load(Ordering::Relaxed) {
       log_with_time("WARNING ", format!($($arg),*).as_str());
     }
   };
@@ -146,7 +156,7 @@ macro_rules! log_warning {
 
 macro_rules! log_info {
   ($($arg:expr),*) => {
-    if INFO {
+    if INFO.load(Ordering::Relaxed) {
       log_with_time("INFO    ", format!($($arg),*).as_str());
     }
   };
@@ -154,7 +164,7 @@ macro_rules! log_info {
 
 macro_rules! log_verbose {
   ($($arg:expr),*) => {
-    if VERBOSE {
+    if VERBOSE.load(Ordering::Relaxed) {
       log_with_time("VERBOSE --- ", format!($($arg),*).as_str());
     }
   };
@@ -162,14 +172,14 @@ macro_rules! log_verbose {
 
 macro_rules! log_trace {
   ($($arg:expr),*) => {
-    if TRACE {
+    if TRACE.load(Ordering::Relaxed) {
       log_with_time("TRACE   --- --- ", format!($($arg),*).as_str());
     }
   };
 }
 
 fn kind_from_name(name : &str) -> NodeKind {
-  log_trace!("kind_from_name");
+  log_trace!("kind_from_name: `{}`", name);
 
   match name.chars().nth(0) {
     Some('U') => NodeKind::User,
@@ -180,7 +190,7 @@ fn kind_from_name(name : &str) -> NodeKind {
 }
 
 impl AugMultiGraph {
-  pub fn new() -> Result<AugMultiGraph, Box<dyn Error + 'static>> {
+  pub fn new() -> Result<AugMultiGraph, BoxedError> {
     log_trace!("AugMultiGraph::new");
 
     Ok(AugMultiGraph {
@@ -191,7 +201,7 @@ impl AugMultiGraph {
     })
   }
 
-  fn reset(&mut self) -> Result<(), Box<dyn Error + 'static>> {
+  fn reset(&mut self) -> Result<(), BoxedError> {
     log_trace!("reset");
 
     self.node_count   = 0;
@@ -202,7 +212,7 @@ impl AugMultiGraph {
     Ok(())
   }
 
-  fn node_id_from_name(&self, node_name : &str) -> Result<NodeId, Box<dyn Error + 'static>> {
+  fn node_id_from_name(&self, node_name : &str) -> Result<NodeId, BoxedError> {
     log_trace!("node_id_from_name");
 
     match self.node_ids.get(node_name) {
@@ -213,8 +223,8 @@ impl AugMultiGraph {
     }
   }
 
-  fn node_info_from_id(&self, node_id : NodeId) -> Result<&NodeInfo, Box<dyn Error + 'static>> {
-    log_trace!("node_info_from_id");
+  fn node_info_from_id(&self, node_id : NodeId) -> Result<&NodeInfo, BoxedError> {
+    log_trace!("node_info_from_id: {}", node_id);
 
     match self.node_infos.get(node_id) {
       Some(x) => Ok(x),
@@ -224,8 +234,8 @@ impl AugMultiGraph {
     }
   }
 
-  fn add_context_if_does_not_exist(&mut self, context : &str) -> Result<(), Box<dyn Error + 'static>> {
-    log_trace!("add_context_if_does_not_exist");
+  fn add_context_if_does_not_exist(&mut self, context : &str) -> Result<(), BoxedError> {
+    log_trace!("add_context_if_does_not_exist: `{}`", context);
 
     if !self.contexts.contains_key(context) {
       if context.is_empty() {
@@ -238,12 +248,25 @@ impl AugMultiGraph {
     Ok(())
   }
 
+  //  Get mutable graph from a context
+  //
+  fn graph_from(&mut self, context : &str) -> Result<&mut MeritRank<()>, BoxedError> {
+    log_trace!("graph_from: `{}`", context);
+
+    match self.contexts.get_mut(context) {
+      Some(graph) => Ok(graph),
+      None        => {
+        error!("graph_from", "Context does not exist: `{}`", context)
+      },
+    }
+  }
+
   fn find_or_add_node_by_name(
     &mut self,
     context   : &str,
     node_name : &str
-  ) -> Result<NodeId, Box<dyn Error + 'static>> {
-    log_trace!("find_or_add_node_by_name");
+  ) -> Result<NodeId, BoxedError> {
+    log_trace!("find_or_add_node_by_name: `{}`, `{}`", context, node_name);
 
     if let Some(&node_id) = self.node_ids.get(node_name) {
       Ok(node_id)
@@ -273,27 +296,14 @@ impl AugMultiGraph {
     }
   }
 
-  //  Get mutable graph from a context
-  //
-  fn graph_from(&mut self, context : &str) -> Result<&mut MeritRank<()>, Box<dyn Error + 'static>> {
-    log_trace!("graph_from");
-
-    match self.contexts.get_mut(context) {
-      Some(graph) => Ok(graph),
-      None        => {
-        error!("graph_from", "Context does not exist: `{}`", context)
-      },
-    }
-  }
-
   fn set_edge(
     &mut self,
     context : &str,
     src     : NodeId,
     dst     : NodeId,
     amount  : f64
-  ) -> Result<(), Box<dyn Error + 'static>> {
-    log_trace!("set_edge");
+  ) -> Result<(), BoxedError> {
+    log_trace!("set_edge: `{}` `{}` `{}` {}", context, src, dst, amount);
 
     if context.is_empty() {
       self.add_context_if_does_not_exist("")?;
@@ -325,9 +335,9 @@ impl AugMultiGraph {
     ego       : NodeId
   ) -> Result<
     Vec<(NodeId, NodeId)>,
-    Box<dyn Error + 'static>
+    BoxedError
   > {
-    log_trace!("connected_nodes");
+    log_trace!("connected_nodes: `{}` {}", context, ego);
 
     let edge_ids : Vec<(NodeId, NodeId)> =
       self.graph_from(context)?
@@ -347,15 +357,15 @@ impl AugMultiGraph {
     ego       : &str
   ) -> Result<
     Vec<(&str, &str)>,
-    Box<dyn Error + 'static>
+    BoxedError
   > {
-    log_trace!("connected_node_names");
+    log_trace!("connected_node_names: `{}` `{}`", context, ego);
 
     let src_id = self.node_id_from_name(ego)?;
 
     let edge_ids = self.connected_nodes(context, src_id)?;
 
-    let res : Result<Vec<(&str, &str)>, Box<dyn Error + 'static>> =
+    let res : Result<Vec<(&str, &str)>, BoxedError> =
       edge_ids
         .into_iter()
         .map(|(src_id, dst_id)| Ok((
@@ -367,8 +377,8 @@ impl AugMultiGraph {
     Ok(res?)
   }
 
-  fn recalculate_all(&mut self, num_walk : usize) -> Result<(), Box<dyn Error + 'static>> {
-    log_trace!("recalculate_all");
+  fn recalculate_all(&mut self, num_walk : usize) -> Result<(), BoxedError> {
+    log_trace!("recalculate_all: {}", num_walk);
 
     let infos = self.node_infos.clone();
     let graph = self.graph_from("")?;
@@ -389,7 +399,7 @@ impl AugMultiGraph {
 //
 //  ================================================
 
-pub fn read_version() -> Result<Vec<u8>, Box<dyn Error + 'static>> {
+pub fn read_version() -> Result<Vec<u8>, BoxedError> {
   log_info!("CMD read_version");
 
   let s : String = VERSION.to_string();
@@ -397,8 +407,8 @@ pub fn read_version() -> Result<Vec<u8>, Box<dyn Error + 'static>> {
 }
 
 impl AugMultiGraph {
-  pub fn read_node_score_null(&mut self, ego : &str, target : &str) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    log_info!("CMD read_node_score_null");
+  pub fn read_node_score_null(&mut self, ego : &str, target : &str) -> Result<Vec<u8>, BoxedError> {
+    log_info!("CMD read_node_score_null: `{}` `{}`", ego, target);
 
     let ego_id    = self.node_id_from_name(ego)?;
     let target_id = self.node_id_from_name(target)?;
@@ -421,8 +431,8 @@ impl AugMultiGraph {
     Ok(rmp_serde::to_vec(&result)?)
   }
 
-  pub fn read_scores_null(&mut self, ego : &str) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    log_info!("CMD read_scores_null");
+  pub fn read_scores_null(&mut self, ego : &str) -> Result<Vec<u8>, BoxedError> {
+    log_info!("CMD read_scores_null: `{}`", ego);
 
     let ego_id = self.node_id_from_name(ego)?;
 
@@ -458,13 +468,13 @@ impl AugMultiGraph {
         )
         .collect();
 
-    let result : Result<Vec<(&str, &str, Weight)>, _> =
+    let result : Result<Vec<(&str, &str, Weight)>, BoxedError> =
       intermediate
         .iter()
         .map(|(ego, node, weight)|
           match self.node_info_from_id(*node) {
             Ok(info) => Ok((*ego, info.name.as_str(), *weight)),
-            Err(x)   => Err(x)
+            Err(x)   => error!("read_scores_null", "{}", x),
           }
         )
         .collect();
@@ -478,8 +488,8 @@ impl AugMultiGraph {
     context : &str,
     ego     : &str,
     target  : &str
-  ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    log_info!("CMD read_node_score");
+  ) -> Result<Vec<u8>, BoxedError> {
+    log_info!("CMD read_node_score: `{}` `{}` `{}`", context, ego, target);
 
     let ego_id    = self.node_id_from_name(ego)?;
     let target_id = self.node_id_from_name(target)?;
@@ -511,8 +521,11 @@ impl AugMultiGraph {
     score_gte     : bool,
     index         : u32,
     count         : u32
-  ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    log_info!("CMD read_scores");
+  ) -> Result<Vec<u8>, BoxedError> {
+    log_info!("CMD read_scores: `{}` `{}` `{}` {} {} {} {} {} {} {}",
+              context, ego, kind_str, hide_personal,
+              score_lt, score_lte, score_gt, score_gte,
+              index, count);
 
     let kind = match kind_str {
       ""  => NodeKind::Unknown,
@@ -543,7 +556,7 @@ impl AugMultiGraph {
     //  1.  We have to use ? operator inside of closures, so we can handle errors properly.
     //  2.  We have to borrow self multiple times at once to call methods.
 
-    let im1 : Result<Vec<(NodeId, NodeKind, Weight)>, Box<dyn Error + 'static>> =
+    let im1 : Result<Vec<(NodeId, NodeKind, Weight)>, BoxedError> =
       ranks
         .into_iter()
         .map(|(n, w)| {
@@ -570,10 +583,10 @@ impl AugMultiGraph {
         })
         .collect();
 
-    let im2 : Result<Vec<(NodeId, NodeKind, Weight)>, Box<dyn Error + 'static>> =
+    let im2 : Result<Vec<(NodeId, NodeKind, Weight)>, BoxedError> =
       im1?
         .into_iter()
-        .map(|x| Ok(x))
+        .map(|x| -> Result<_, BoxedError> { Ok(x) })
         .filter_map(|val| match val {
           Ok((target_id, target_kind, weight)) =>
             if hide_personal {
@@ -593,7 +606,7 @@ impl AugMultiGraph {
             } else {
               Some(Ok((target_id, target_kind, weight)))
             }
-          Err(x) => Some(Err(x)),
+          Err(x) => Some(error!("read_scores", "{}", x)),
         })
         .collect();
 
@@ -609,10 +622,10 @@ impl AugMultiGraph {
         .iter()
         .skip(index as usize)
         .take(count as usize)
-        .map(|(target_id, _, weight)| {
+        .map(|(target_id, _, weight)| -> Result<_, BoxedError> {
           match self.node_info_from_id(*target_id) {
             Ok(x)  => Ok((ego, x.name.as_str(), *weight)),
-            Err(x) => Err(x)
+            Err(x) => error!("read_scores", "{}", x)
           }
         })
         .collect();
@@ -626,8 +639,8 @@ impl AugMultiGraph {
     src     : &str,
     dst     : &str,
     amount  : f64
-  ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    log_info!("CMD write_put_edge");
+  ) -> Result<Vec<u8>, BoxedError> {
+    log_info!("CMD write_put_edge: `{}` `{}` `{}` {}", context, src, dst, amount);
 
     let src_id = self.find_or_add_node_by_name(context, src)?;
     let dst_id = self.find_or_add_node_by_name(context, dst)?;
@@ -643,8 +656,8 @@ impl AugMultiGraph {
     context : &str,
     src     : &str,
     dst     : &str,
-  ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    log_info!("CMD write_delete_edge");
+  ) -> Result<Vec<u8>, BoxedError> {
+    log_info!("CMD write_delete_edge: `{}` `{}` `{}`", context, src, dst);
 
     let src_id = self.node_id_from_name(src)?;
     let dst_id = self.node_id_from_name(dst)?;
@@ -658,8 +671,8 @@ impl AugMultiGraph {
     &mut self,
     context : &str,
     node    : &str,
-  ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    log_info!("CMD write_delete_node");
+  ) -> Result<Vec<u8>, BoxedError> {
+    log_info!("CMD write_delete_node: `{}` `{}`", context, node);
 
     let id = self.node_id_from_name(node)?;
 
@@ -678,8 +691,9 @@ impl AugMultiGraph {
     positive_only : bool,
     index         : u32,
     count         : u32
-  ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    log_info!("CMD read_graph");
+  ) -> Result<Vec<u8>, BoxedError> {
+    log_info!("CMD read_graph: `{}` `{}` `{}` {} {} {}",
+              context, ego, focus, positive_only, index, count);
 
     let ego_id   = self.node_id_from_name(ego)?;
     let focus_id = self.node_id_from_name(focus)?;
@@ -748,7 +762,7 @@ impl AugMultiGraph {
       //    A* search
       //
 
-      let neighbor = |node : NodeId, index : usize| -> Result<Option<Link<NodeId, Weight>>, Box<dyn Error + 'static>> {
+      let neighbor = |node : NodeId, index : usize| -> Result<Option<Link<NodeId, Weight>>, BoxedError> {
         let v : Vec<_> = graph_cloned.neighbors(node).into_iter().skip(index).take(1).collect();
         if v.is_empty() {
           Ok(None)
@@ -764,7 +778,7 @@ impl AugMultiGraph {
         }
       };
 
-      let heuristic = |node : NodeId| -> Result<Weight, Box<dyn Error + 'static>> {
+      let heuristic = |node : NodeId| -> Result<Weight, BoxedError> {
         //  ad hok
         Ok(((node as i64) - (focus_id as i64)).abs() as f64)
       };
@@ -775,7 +789,6 @@ impl AugMultiGraph {
       let mut count  = 0;
 
       //  Do 10000 iterations max
-      //
 
       for _ in 0..10000 {
         count += 1;
@@ -874,7 +887,7 @@ impl AugMultiGraph {
       }
     }
 
-    let edge_names : Result<Vec<(&str, &str, Weight)>, Box<dyn Error + 'static>> =
+    let edge_names : Result<Vec<(&str, &str, Weight)>, BoxedError> =
       edge_ids
         .into_iter()
         .map(|(src_id, dst_id, weight)| {Ok((
@@ -893,18 +906,18 @@ impl AugMultiGraph {
     &mut self,
     context   : &str,
     ego       : &str
-  ) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    log_info!("CMD read_connected");
+  ) -> Result<Vec<u8>, BoxedError> {
+    log_info!("CMD read_connected: `{}` `{}`", context, ego);
 
     let edges = self.connected_node_names(context, ego)?;
 
     if edges.is_empty() {
-      return Err("No edges".into());
+      return error!("read_connected", "No edges");
     }
     return Ok(rmp_serde::to_vec(&edges)?);
   }
 
-  pub fn read_node_list(&self) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
+  pub fn read_node_list(&self) -> Result<Vec<u8>, BoxedError> {
     log_info!("CMD read_node_list");
 
     let result : Vec<(&str,)> =
@@ -917,8 +930,8 @@ impl AugMultiGraph {
     Ok(v)
   }
 
-  pub fn read_edges(&mut self, context : &str) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
-    log_info!("CMD read_edges");
+  pub fn read_edges(&mut self, context : &str) -> Result<Vec<u8>, BoxedError> {
+    log_info!("CMD read_edges: `{}`", context);
 
     let infos = self.node_infos.clone();
 
@@ -953,9 +966,9 @@ impl AugMultiGraph {
     ego       : &str
   ) -> Result<
     Vec<u8>,
-    Box<dyn Error + 'static>
+    BoxedError
   > {
-    log_info!("CMD read_mutual_scores");
+    log_info!("CMD read_mutual_scores: `{}` `{}`", context, ego);
 
     let ego_id = self.node_id_from_name(ego)?;
 
@@ -996,7 +1009,7 @@ impl AugMultiGraph {
     Ok(rmp_serde::to_vec(&v)?)
   }
 
-  pub fn write_reset(&mut self) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
+  pub fn write_reset(&mut self) -> Result<Vec<u8>, BoxedError> {
     log_info!("CMD write_reset");
 
     self.reset()?;
@@ -1012,7 +1025,7 @@ impl AugMultiGraph {
 //  ================================================
 
 impl AugMultiGraph {
-  fn reduced_graph(&mut self) -> Result<Vec<(NodeId, NodeId, f64)>, Box<dyn Error + 'static>> {
+  fn reduced_graph(&mut self) -> Result<Vec<(NodeId, NodeId, f64)>, BoxedError> {
     log_trace!("reduced_graph");
 
     let zero = self.find_or_add_node_by_name("", ZERO_NODE.as_str())?;
@@ -1038,7 +1051,7 @@ impl AugMultiGraph {
     let edges : Vec<(NodeId, NodeId, Weight)> =
       users.into_iter()
         .map(|id| {
-          let result : Result<Vec<(NodeId, NodeId, Weight)>, _> =
+          let result : Result<_, BoxedError> =
             self
               .graph_from("")?
               .get_ranks(id, None)?
@@ -1047,7 +1060,7 @@ impl AugMultiGraph {
               .filter_map(|(ego_id, node_id, score)| {
                 let kind = match self.node_info_from_id(node_id) {
                   Ok(info) => info.kind,
-                  Err(x)   => return Some(Err(x)),
+                  Err(x)   => return Some(error!("reduced_graph", "{}", x)),
                 };
                 if (kind == NodeKind::User || kind == NodeKind::Beacon) &&
                    score > 0.0 &&
@@ -1059,16 +1072,16 @@ impl AugMultiGraph {
                 }
               })
               .collect();
-          Ok::<Vec<(NodeId, NodeId, Weight)>, Box<dyn Error + 'static>>(result?)
+          Ok::<Vec<(NodeId, NodeId, Weight)>, BoxedError>(result?)
         })
         .filter_map(|res| res.ok())
         .flatten()
         .collect();
 
-    let result : Result<Vec<(NodeId, NodeId, f64)>, Box<dyn Error + 'static>> =
+    let result : Result<Vec<(NodeId, NodeId, f64)>, BoxedError> =
       edges
         .into_iter()
-        .map(|(ego_id, dst_id, weight)| {
+        .map(|(ego_id, dst_id, weight)| -> Result<_, BoxedError> {
           let ego_kind = self.node_info_from_id(ego_id)?.kind;
           let dst_kind = self.node_info_from_id(dst_id)?.kind;
           Ok((ego_id, ego_kind, dst_id, dst_kind, weight))
@@ -1085,16 +1098,16 @@ impl AugMultiGraph {
           },
           Err(_) => true,
         })
-        .map(|val| match val {
+        .map(|val| { match val {
           Ok((ego_id, _, dst_id, _, weight)) => Ok((ego_id, dst_id, weight)),
-          Err(x)                             => Err(x),
-        })
+          Err(x)                             => error!("reduced_graph", "{}", x),
+        }})
         .collect();
 
     return Ok(result?);
   }
 
-  fn delete_from_zero(&mut self) -> Result<(), Box<dyn Error + 'static>> {
+  fn delete_from_zero(&mut self) -> Result<(), BoxedError> {
     log_trace!("delete_from_zero");
 
     let src_id = self.node_id_from_name(ZERO_NODE.as_str())?;
@@ -1111,13 +1124,13 @@ impl AugMultiGraph {
     return Ok(());
   }
 
-  fn top_nodes(&mut self) -> Result<Vec<(NodeId, f64)>, Box<dyn Error + 'static>> {
+  fn top_nodes(&mut self) -> Result<Vec<(NodeId, f64)>, BoxedError> {
     log_trace!("top_nodes");
 
     let reduced = self.reduced_graph()?;
 
     if reduced.is_empty() {
-      return Err("Reduced graph empty".into());
+      return error!("top_nodes", "Reduced graph empty");
     }
 
     let mut pr = Pagerank::<NodeId>::new();
@@ -1151,13 +1164,13 @@ impl AugMultiGraph {
       .collect::<Vec<_>>();
 
     if res.is_empty() {
-      return Err("No top nodes".into());
+      return error!("top_nodes", "No top nodes");
     }
 
     return Ok(res);
   }
 
-  pub fn write_recalculate_zero(&mut self) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
+  pub fn write_recalculate_zero(&mut self) -> Result<Vec<u8>, BoxedError> {
     log_info!("CMD write_recalculate_zero");
 
     let _ = self.add_context_if_does_not_exist("");
@@ -1191,7 +1204,7 @@ impl AugMultiGraph {
 fn decode_and_handle_request(
   multi_graph : &mut AugMultiGraph,
   request     : &[u8]
-) -> Result<Vec<u8>, Box<dyn Error + 'static>> {
+) -> Result<Vec<u8>, BoxedError> {
   log_trace!("decode_and_handle_request");
 
   let command : &str;
@@ -1216,7 +1229,7 @@ fn decode_and_handle_request(
   }
 
   if !context.is_empty() && (command == CMD_VERSION || command == CMD_RESET || command == CMD_RECALCULATE_ZERO || command == CMD_NODE_SCORE_NULL || command == CMD_SCORES_NULL || command == CMD_NODE_LIST) {
-    return Err("Context should be empty".into());
+    return error!("decode_and_handle_request", "Context should be empty");
   }
 
   if        command == CMD_VERSION {
@@ -1349,7 +1362,7 @@ fn worker_callback(multi_graph : Arc<Mutex<AugMultiGraph>>, aio : Aio, ctx : &Co
   };
 }
 
-pub fn main_sync() -> Result<(), Box<dyn Error + 'static>> {
+pub fn main_sync() -> Result<(), BoxedError> {
   log_info!("Starting server {} at {}", VERSION, *SERVICE_URL);
   log_info!("NUM_WALK={}", *NUM_WALK);
 
@@ -1366,7 +1379,7 @@ pub fn main_sync() -> Result<(), Box<dyn Error + 'static>> {
   }
 }
 
-pub fn main_async(threads : usize) -> Result<(), Box<dyn Error + 'static>> {
+pub fn main_async(threads : usize) -> Result<(), BoxedError> {
   log_info!("Starting server {} at {}, {} threads", VERSION, *SERVICE_URL, threads);
   log_info!("NUM_WALK={}", *NUM_WALK);
 

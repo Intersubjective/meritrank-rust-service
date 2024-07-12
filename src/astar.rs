@@ -5,7 +5,7 @@
 //
 //  ================================================================
 //
-//    (C) 2024 Mitya Selivanov <guattari.tech>, The MIT License
+//    (C) 2024 Mitya Selivanov <guattari.tech>, MIT License
 //
 //  ================================================================
 

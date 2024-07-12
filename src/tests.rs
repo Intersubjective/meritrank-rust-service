@@ -1241,7 +1241,7 @@ fn recalculate_zero_graph_all() {
   println!("Got {} edges", n);
   assert!(n > 25);
   assert!(n < 120);
-}
+ }
 
 #[test]
 fn recalculate_zero_graph_positive_only() {
