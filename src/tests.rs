@@ -1,4 +1,4 @@
-use super::*;
+use crate::service::*;
 
 fn put_testing_edges(graph : &mut AugMultiGraph, context : &str) {
   let _ = graph.write_put_edge(context, "U0cd6bd2dde4f","B7f628ad203b5",1.0).unwrap();
@@ -1199,12 +1199,12 @@ fn no_assert() {
 }
 
 #[test]
-fn zerorec_graph_all() {
+fn recalculate_zero_graph_all() {
   let mut graph = AugMultiGraph::new().unwrap();
 
   put_testing_edges(&mut graph, "");
 
-  let _ = graph.write_zerorec().unwrap();
+  let _ = graph.write_recalculate_zero().unwrap();
 
   let res : Vec<(String, String, Weight)> =
     rmp_serde::from_slice(
@@ -1221,12 +1221,12 @@ fn zerorec_graph_all() {
 }
 
 #[test]
-fn zerorec_graph_positive_only() {
+fn recalculate_zero_graph_positive_only() {
   let mut graph = AugMultiGraph::new().unwrap();
 
   put_testing_edges(&mut graph, "");
 
-  let _ = graph.write_zerorec().unwrap();
+  let _ = graph.write_recalculate_zero().unwrap();
 
   let res : Vec<(String, String, Weight)> =
     rmp_serde::from_slice(
@@ -1243,12 +1243,12 @@ fn zerorec_graph_positive_only() {
 }
 
 #[test]
-fn zerorec_graph_focus_beacon() {
+fn recalculate_zero_graph_focus_beacon() {
   let mut graph = AugMultiGraph::new().unwrap();
 
   put_testing_edges(&mut graph, "");
 
-  let _ = graph.write_zerorec().unwrap();
+  let _ = graph.write_recalculate_zero().unwrap();
 
   let res : Vec<(String, String, Weight)> =
     rmp_serde::from_slice(
@@ -1413,7 +1413,7 @@ fn node_scores_unknown_context() {
 
   let res_bytes = graph.read_scores("Y", "U1", "U", false, 10.0, false, 0.0, false, 0, u32::MAX);
 
-  assert_eq!(res_bytes.err().unwrap().to_string(), "Context does not exist");
+  assert_eq!(res_bytes.err().unwrap().to_string(), "Context does not exist: `Y`");
 }
 
 #[test]
