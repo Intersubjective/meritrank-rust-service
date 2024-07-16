@@ -1,7 +1,7 @@
 use std::{
   sync::atomic::{AtomicBool, Ordering},
   collections::HashMap,
-  sync::{Arc, Mutex},
+  sync::{Arc, Mutex, RwLock},
   ops::DerefMut,
   env::var,
   string::ToString,
@@ -13,7 +13,7 @@ use itertools::Itertools;
 use nng::{Aio, AioResult, Context, Message, Protocol, Socket};
 use petgraph::{visit::EdgeRef, graph::{DiGraph, NodeIndex}};
 use simple_pagerank::Pagerank;
-use meritrank::{MeritRank, Graph, IntMap, NodeId, Neighbors};
+use meritrank::{MeritRank, Graph, IntMap, NodeId, Neighbors, MeritRankError};
 
 use crate::commands::*;
 use crate::astar::astar::*;
@@ -102,6 +102,19 @@ pub struct AugMultiGraph {
   pub contexts   : HashMap<String, MeritRank<()>>,
 }
 
+#[derive(Clone, Default)]
+pub struct Command {
+  pub name    : String,
+  pub context : String,
+  pub payload : Vec<u8>,
+}
+
+pub struct DataAndQueue {
+  pub graph_readable : RwLock<AugMultiGraph>,
+  pub graph_writable : Mutex<AugMultiGraph>,
+  pub command_queue  : Mutex<Vec<Command>>,
+}
+
 //  ================================================================
 //
 //    Utils
@@ -115,7 +128,7 @@ fn log_with_time(prefix : &str, message : &str) {
   let time_str  = time.format("%Y-%m-%d %H:%M:%S");
   let millis    = time.timestamp_millis() % 1000;
   let thread_id = thread::current().id();
-  
+
   match LOG_MUTEX.lock() {
     Ok(_) => {
       println!("{}.{:03} {:3?}  {}{}", time_str, millis, thread_id, prefix, message);
@@ -146,6 +159,7 @@ macro_rules! error {
   };
 }
 
+#[allow(unused_macros)]
 macro_rules! log_warning {
   ($($arg:expr),*) => {
     if WARNING.load(Ordering::Relaxed) {
@@ -186,6 +200,59 @@ fn kind_from_name(name : &str) -> NodeKind {
     Some('B') => NodeKind::Beacon,
     Some('C') => NodeKind::Comment,
     _         => NodeKind::Unknown,
+  }
+}
+
+fn get_score_or_recalculate(
+  graph   : &mut MeritRank<()>,
+  src_id  : NodeId,
+  dst_id  : NodeId
+) -> Result<Weight, BoxedError> {
+  log_trace!("get_score_or_recalculate");
+
+  match graph.get_node_score(src_id, dst_id) {
+    Ok(score) => Ok(score),
+    Err(MeritRankError::NodeDoesNotExist) => {
+      log_warning!("Node does not exist: {}, {}", src_id, dst_id);
+      Ok(0.0)
+    },
+    _ => {
+      log_warning!("Recalculating node {}", src_id);
+      match graph.calculate(src_id, *NUM_WALK) {
+        Err(e) => {
+          log_warning!("{}", e);
+          return Ok(0.0);
+        },
+        _ => {},
+      };
+      Ok(graph.get_node_score(src_id, dst_id)?)
+    },
+  }
+}
+
+fn get_ranks_or_recalculate(
+  graph   : &mut MeritRank<()>,
+  node_id : NodeId
+) -> Result<Vec<(NodeId, Weight)>, BoxedError> {
+  log_trace!("get_ranks_or_recalculate");
+
+  match graph.get_ranks(node_id, None) {
+    Ok(ranks) => Ok(ranks),
+    Err(MeritRankError::NodeDoesNotExist) => {
+      log_warning!("Node does not exist: {}", node_id);
+      Ok(vec![])
+    },
+    _ => {
+      log_warning!("Recalculating node: {}", node_id);
+      match graph.calculate(node_id, *NUM_WALK) {
+        Err(e) => {
+          log_warning!("{}", e);
+          return Ok(vec![]);
+        },
+        _ => {},
+      };
+      Ok(graph.get_ranks(node_id, None)?)
+    },
   }
 }
 
@@ -234,8 +301,10 @@ impl AugMultiGraph {
     }
   }
 
-  fn add_context_if_does_not_exist(&mut self, context : &str) -> Result<(), BoxedError> {
-    log_trace!("add_context_if_does_not_exist: `{}`", context);
+  //  Get mutable graph from a context
+  //
+  fn graph_from(&mut self, context : &str) -> Result<&mut MeritRank<()>, BoxedError> {
+    log_trace!("graph_from: `{}`", context);
 
     if !self.contexts.contains_key(context) {
       if context.is_empty() {
@@ -245,18 +314,11 @@ impl AugMultiGraph {
       }
       self.contexts.insert(context.to_string(), MeritRank::new(Graph::new())?);
     }
-    Ok(())
-  }
-
-  //  Get mutable graph from a context
-  //
-  fn graph_from(&mut self, context : &str) -> Result<&mut MeritRank<()>, BoxedError> {
-    log_trace!("graph_from: `{}`", context);
 
     match self.contexts.get_mut(context) {
       Some(graph) => Ok(graph),
       None        => {
-        error!("graph_from", "Context does not exist: `{}`", context)
+        error!("graph_from", "Unable to add context `{}`", context)
       },
     }
   }
@@ -281,13 +343,9 @@ impl AugMultiGraph {
       self.node_ids.insert(node_name.to_string(), node_id);
 
       if !context.is_empty() {
-        self.add_context_if_does_not_exist("")?;
-
         log_verbose!("Add node in NULL: {}", node_id);
         self.graph_from("")?.add_node(node_id, ());
       }
-
-      self.add_context_if_does_not_exist(context)?;
 
       log_verbose!("Add node in `{}`: {}", context, node_id);
       self.graph_from(context)?.add_node(node_id, ());
@@ -306,13 +364,9 @@ impl AugMultiGraph {
     log_trace!("set_edge: `{}` `{}` `{}` {}", context, src, dst, amount);
 
     if context.is_empty() {
-      self.add_context_if_does_not_exist("")?;
       log_verbose!("Add edge in NULL: {} -> {} for {}", src, dst, amount);
       self.graph_from("")?.add_edge(src, dst, amount);
     } else {
-      self.add_context_if_does_not_exist("")?;
-      self.add_context_if_does_not_exist(context)?;
-
       //  This doesn't make any sense but it's Rust.
 
       let null_weight = self.graph_from("")?     .get_edge(src, dst).unwrap_or(0.0);
@@ -430,13 +484,7 @@ impl AugMultiGraph {
       if name.is_empty() {
         continue;
       }
-      w += match rank.get_node_score(ego_id, target_id) {
-        Ok(x) => x,
-        _     => {
-          let _ = rank.calculate(ego_id, *NUM_WALK)?;
-          rank.get_node_score(ego_id, target_id)?
-        }
-      }
+      w += get_score_or_recalculate(rank, ego_id, target_id)?;
     }
 
     let result : Vec<(&str, &str, f64)> = [(ego, target, w)].to_vec();
@@ -455,13 +503,7 @@ impl AugMultiGraph {
           if context.is_empty() {
             return None;
           }
-          let rank_result = match rank.get_ranks(ego_id, None) {
-            Ok(x) => x,
-            _     => {
-              let _ = rank.calculate(ego_id, *NUM_WALK).ok()?;
-              rank.get_ranks(ego_id, None).ok()?
-            }
-          };
+          let rank_result = get_ranks_or_recalculate(rank, ego_id).ok()?;
           let rows : Vec<_> =
             rank_result
               .into_iter()
@@ -508,14 +550,7 @@ impl AugMultiGraph {
 
     let graph = self.graph_from(context)?;
 
-    let w = match graph.get_node_score(ego_id, target_id) {
-      Ok(x) => x,
-      _     => {
-        log_warning!("(read_node_score) Node scores recalculation for {}", ego_id);
-        graph.calculate(ego_id, *NUM_WALK)?;
-        graph.get_node_score(ego_id, target_id)?
-      }
-    };
+    let w = get_score_or_recalculate(graph, ego_id, target_id)?;
 
     let result: Vec<(&str, &str, f64)> = [(ego, target, w)].to_vec();
     Ok(rmp_serde::to_vec(&result)?)
@@ -551,98 +586,55 @@ impl AugMultiGraph {
 
     let node_id = self.node_id_from_name(ego)?;
 
-    let ranks = match self.graph_from(context)?.get_ranks(node_id, None) {
-      Ok(x) => x,
-      _     => {
-        log_warning!("(read_scores) Node scores recalculation for {}", node_id);
-        let graph = self.graph_from(context)?;
-        let _ = graph.calculate(node_id, *NUM_WALK)?;
-        graph.get_ranks(node_id, None)?
-      }
-    };
+    let ranks = get_ranks_or_recalculate(self.graph_from(context)?, node_id)?;
 
-    //  FIXME
-    //  Fix this boilerplate madness!!!
-    //
-    //  Problems:
-    //  1.  We have to use ? operator inside of closures, so we can handle errors properly.
-    //  2.  We have to borrow self multiple times at once to call methods.
-
-    let im1 : Result<Vec<(NodeId, NodeKind, Weight)>, BoxedError> =
+    let mut im : Vec<(NodeId, Weight)> =
       ranks
         .into_iter()
-        .map(|(n, w)| {
-            Ok((
-              n,
-              self.node_info_from_id(n)?.kind,
-              w,
-            ))
-        })
-        .filter(|val|
-          match val {
-            Ok((_, NodeKind::Unknown, _)) => true,
-            Ok((_, target_kind, _))       => kind == *target_kind,
-            _                             => true,
-          }
-        )
-        .filter(|val| match val {
-          Ok((_, _, score)) => score_gt < *score || (score_gte && score_gt == *score),
-          _                 => true,
-        })
-        .filter(|val| match val {
-          Ok((_, _, score)) => *score < score_lt || (score_lte && score_lt == *score),
-          _                 => true,
-        })
-        .collect();
-
-    let im2 : Result<Vec<(NodeId, NodeKind, Weight)>, BoxedError> =
-      im1?
+        .map(|(n, w)| (
+          n,
+          match self.node_info_from_id(n) {
+            Ok(info) => info.kind,
+            _        => NodeKind::Unknown
+          },
+          w,
+        ))
+        .filter(|(_, target_kind, _)| kind == NodeKind::Unknown || kind == *target_kind)
+        .filter(|(_, _, score)| score_gt < *score || (score_gte && score_gt == *score))
+        .filter(|(_, _, score)| *score < score_lt || (score_lte && score_lt == *score))
+        .collect::<Vec<(NodeId, NodeKind, Weight)>>()
         .into_iter()
-        .map(|x| -> Result<_, BoxedError> { Ok(x) })
-        .filter_map(|val| match val {
-          Ok((target_id, target_kind, weight)) =>
-            if hide_personal {
-              if target_kind == NodeKind::Comment || target_kind == NodeKind::Beacon {
-                match self.graph_from(context) {
-                  Ok(graph) =>
-                    if graph.get_edge(target_id, node_id).is_some() {
-                      None
-                    } else {
-                      Some(Ok((target_id, target_kind, weight)))
-                    },
-                  _ => Some(Ok((target_id, target_kind, weight))),
-                }
-              } else {
-                Some(Ok((target_id, target_kind, weight)))
-              }
-            } else {
-              Some(Ok((target_id, target_kind, weight)))
-            }
-          Err(x) => Some(error!("read_scores", "{}", x)),
-        })
-        .collect();
-
-    //
-    //  ================================
-    //
-
-    let mut sorted = im2?;
-    sorted.sort_by(|(_, _, a), (_, _, b)| a.total_cmp(b));
-
-    let page : Result<Vec<(&str, &str, Weight)>, _> =
-      sorted
-        .iter()
-        .skip(index as usize)
-        .take(count as usize)
-        .map(|(target_id, _, weight)| -> Result<_, BoxedError> {
-          match self.node_info_from_id(*target_id) {
-            Ok(x)  => Ok((ego, x.name.as_str(), *weight)),
-            Err(x) => error!("read_scores", "{}", x)
+        .filter(|(target_id, target_kind, _)| {
+          if !hide_personal || (*target_kind != NodeKind::Comment && *target_kind != NodeKind::Beacon) {
+            return true;
+          }
+          match self.graph_from(context) {
+            Ok(graph) => !graph.get_edge(*target_id, node_id).is_some(),
+            Err(x)    => { log_error!("read_scores: {}", x); false },
           }
         })
+        .map(|(target_id, _, weight)| (target_id, weight))
         .collect();
 
-    Ok(rmp_serde::to_vec(&page?)?)
+    im.sort_by(|(_, a), (_, b)| a.total_cmp(b));
+
+    let index = index as usize;
+    let count = count as usize;
+
+    let mut page : Vec<(&str, &str, Weight)> = vec![];
+    page.reserve_exact(if count < im.len() { count } else { im.len() });
+
+    for i in index..count {
+      if i >= im.len() {
+        break;
+      }
+      match self.node_info_from_id(im[i].0) {
+        Ok(info) => { page.push((ego, info.name.as_str(), im[i].1)); },
+        Err(e)   => { log_error!("read_scores: {}", e); },
+      }
+    }
+
+    Ok(rmp_serde::to_vec(&page)?)
   }
 
   pub fn write_put_edge(
@@ -737,7 +729,12 @@ impl AugMultiGraph {
           indices.insert(dst_id, index);
           ids.insert(index, dst_id);
         }
-        im_graph.add_edge(*indices.get(&focus_id).ok_or("Got invalid node")?, *indices.get(&dst_id).ok_or("Got invalid node")?, focus_dst_weight);
+
+        im_graph.add_edge(
+          *indices.get(&focus_id).ok_or("Got invalid node")?,
+          *indices.get(&dst_id).ok_or("Got invalid node")?,
+          focus_dst_weight
+        );
       } else if dst_kind == NodeKind::Comment || dst_kind == NodeKind::Beacon {
         let dst_neighbors = match self.graph_from(context)?.neighbors_weighted(dst_id, Neighbors::All) {
           Some(x) => x,
@@ -752,12 +749,18 @@ impl AugMultiGraph {
           }
 
           let focus_ngh_weight = focus_dst_weight * dst_ngh_weight * if focus_dst_weight < 0.0 && dst_ngh_weight < 0.0 { -1.0 } else { 1.0 };
+
           if !indices.contains_key(&ngh_id) {
             let index = im_graph.add_node(ngh_id);
             indices.insert(ngh_id, index);
             ids.insert(index, ngh_id);
           }
-          im_graph.add_edge(*indices.get(&focus_id).ok_or("Got invalid node")?, *indices.get(&ngh_id).ok_or("Got invalid node")?, focus_ngh_weight);
+
+          im_graph.add_edge(
+            *indices.get(&focus_id).ok_or("Got invalid node")?,
+            *indices.get(&ngh_id).ok_or("Got invalid node")?,
+            focus_ngh_weight
+          );
         }
       }
     }
@@ -790,9 +793,10 @@ impl AugMultiGraph {
         }
       };
 
-      let heuristic = |node : NodeId| -> Result<Weight, BoxedError> {
+      let heuristic = |_node : NodeId| -> Result<Weight, BoxedError> {
+        Ok(0.0)
         //  ad hok
-        Ok(((node as i64) - (focus_id as i64)).abs() as f64)
+        //Ok(((node as i64) - (focus_id as i64)).abs() as f64)
       };
 
       let mut astar_state = init(ego_id, focus_id, Weight::MAX);
@@ -822,6 +826,10 @@ impl AugMultiGraph {
 
       let ego_to_focus = path(&mut astar_state).ok_or("Unable to build a path")?;
 
+      for node in ego_to_focus.iter() {
+        log_trace!("path: {}", self.node_info_from_id(*node)?.name);
+      }
+
       //  ================================
 
       let mut edges = Vec::<(NodeId, NodeId, Weight)>::new();
@@ -841,14 +849,19 @@ impl AugMultiGraph {
         if k + 2 == ego_to_focus.len() {
           if a_kind == NodeKind::User {
             edges.push((a, b, a_b_weight));
+          } else {
+            log_trace!("ignore node {}", self.node_info_from_id(a)?.name);
           }
         } else if b_kind != NodeKind::User {
+          log_trace!("ignore node {}", self.node_info_from_id(b)?.name);
           let c = ego_to_focus[k + 2];
           let b_c_weight = self.graph_from(context)?.get_edge(b, c).ok_or("Got invalid edge")?;
           let a_c_weight = a_b_weight * b_c_weight * if a_b_weight < 0.0 && b_c_weight < 0.0 { -1.0 } else { 1.0 };
           edges.push((a, c, a_c_weight));
         } else if a_kind == NodeKind::User {
           edges.push((a, b, a_b_weight));
+        } else {
+          log_trace!("ignore node {}", self.node_info_from_id(a)?.name);
         }
       }
 
@@ -860,12 +873,18 @@ impl AugMultiGraph {
           indices.insert(src, index);
           ids.insert(index, src);
         }
+
         if !indices.contains_key(&dst) {
           let index = im_graph.add_node(dst);
           indices.insert(dst, index);
           ids.insert(index, dst);
         }
-        im_graph.add_edge(*indices.get(&src).ok_or("Got invalid node")?, *indices.get(&dst).ok_or("Got invalid node")?, weight);
+
+        im_graph.add_edge(
+          *indices.get(&src).ok_or("Got invalid node")?,
+          *indices.get(&dst).ok_or("Got invalid node")?,
+          weight
+        );
       }
     }
 
@@ -984,15 +1003,7 @@ impl AugMultiGraph {
 
     let ego_id = self.node_id_from_name(ego)?;
 
-    let ranks = match self.graph_from(context)?.get_ranks(ego_id, None) {
-      Ok(x) => x,
-      _     => {
-        log_warning!("(read_mutual_scores) Node scores recalculation for {}", ego_id);
-        let graph = self.graph_from(context)?;
-        graph.calculate(ego_id, *NUM_WALK)?;
-        graph.get_ranks(ego_id, None)?
-      }
-    };
+    let ranks = get_ranks_or_recalculate(self.graph_from(context)?, ego_id)?;
 
     let mut v = Vec::<(String, Weight, Weight)>::new();
 
@@ -1002,18 +1013,10 @@ impl AugMultiGraph {
       let info = self.node_info_from_id(node)?.clone();
       if score > 0.0 && info.kind == NodeKind::User
       {
-        let graph = self.graph_from(context)?;
         v.push((
           info.name,
           score,
-          match graph.get_node_score(node, ego_id) {
-            Ok(x) => x,
-            _     => {
-              log_warning!("(read_mutual_scores) Node scores recalculation for {}", ego_id);
-              graph.calculate(node, *NUM_WALK)?;
-              graph.get_node_score(node, ego_id)?
-            }
-          }
+          get_score_or_recalculate(self.graph_from(context)?, node, ego_id)?
         ));
       }
     }
@@ -1064,9 +1067,7 @@ impl AugMultiGraph {
       users.into_iter()
         .map(|id| {
           let result : Result<_, BoxedError> =
-            self
-              .graph_from("")?
-              .get_ranks(id, None)?
+            get_ranks_or_recalculate(self.graph_from("")?, id)?
               .into_iter()
               .map(|(node_id, score)| (id, node_id, score))
               .filter_map(|(ego_id, node_id, score)| {
@@ -1185,7 +1186,6 @@ impl AugMultiGraph {
   pub fn write_recalculate_zero(&mut self) -> Result<Vec<u8>, BoxedError> {
     log_info!("CMD write_recalculate_zero");
 
-    let _ = self.add_context_if_does_not_exist("");
     let _ = self.find_or_add_node_by_name("", ZERO_NODE.as_str())?;
 
     self.recalculate_all(0)?; // FIXME Ad hok hack
@@ -1224,7 +1224,7 @@ fn decode_and_handle_request(
   let payload : Vec<u8>;
 
   match rmp_serde::from_slice(request) {
-    Ok((command_value, context_value, payload_value)) => {    
+    Ok((command_value, context_value, payload_value)) => {
       command = command_value;
       context = context_value;
       payload = payload_value;
@@ -1244,72 +1244,90 @@ fn decode_and_handle_request(
     return error!("decode_and_handle_request", "Context should be empty");
   }
 
-  if        command == CMD_VERSION {
-    if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
-      return read_version();
+  match command {
+    CMD_VERSION => {
+      if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
+        return read_version();
+      }
+    },
+    CMD_LOG_LEVEL => {
+      if let Ok(log_level) = rmp_serde::from_slice(payload.as_slice()) {
+        return write_log_level(log_level);
+      }
+    },
+    CMD_RESET => {
+      if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
+        return multi_graph.write_reset();
+      }
+    },
+    CMD_RECALCULATE_ZERO => {
+      if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
+        return multi_graph.write_recalculate_zero();
+      }
+    },
+    CMD_NODE_LIST => {
+      if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
+        return multi_graph.read_node_list();
+      }
+    },
+    CMD_NODE_SCORE_NULL => {
+      if let Ok((ego, target)) = rmp_serde::from_slice(payload.as_slice()) {
+        return multi_graph.read_node_score_null(ego, target);
+      }
+    },
+    CMD_SCORES_NULL => {
+      if let Ok(ego) = rmp_serde::from_slice(payload.as_slice()) {
+        return multi_graph.read_scores_null(ego);
+      }
+    },
+    CMD_NODE_SCORE => {
+      if let Ok((ego, target)) = rmp_serde::from_slice(payload.as_slice()) {
+        return multi_graph.read_node_score(context, ego, target);
+      }
+    },
+    CMD_SCORES => {
+      if let Ok((ego, kind, hide_personal, lt, lte, gt, gte, index, count)) = rmp_serde::from_slice(payload.as_slice()) {
+        return multi_graph.read_scores(context, ego, kind, hide_personal, lt, lte, gt, gte, index, count);
+      }
+    },
+    CMD_PUT_EDGE => {
+      if let Ok((src, dst, amount)) = rmp_serde::from_slice(payload.as_slice()) {
+        return multi_graph.write_put_edge(context, src, dst, amount);
+      }
+    },
+    CMD_DELETE_EDGE => {
+      if let Ok((src, dst)) = rmp_serde::from_slice(payload.as_slice()) {
+        return multi_graph.write_delete_edge(context, src, dst);
+      }
+    },
+    CMD_DELETE_NODE => {
+      if let Ok(node) = rmp_serde::from_slice(payload.as_slice()) {
+        return multi_graph.write_delete_node(context, node);
+      }
+    },
+    CMD_GRAPH => {
+      if let Ok((ego, focus, positive_only, index, count)) = rmp_serde::from_slice(payload.as_slice()) {
+        return multi_graph.read_graph(context, ego, focus, positive_only, index, count);
+      }
+    },
+    CMD_CONNECTED => {
+      if let Ok(node) = rmp_serde::from_slice(payload.as_slice()) {
+        return multi_graph.read_connected(context, node);
+      }
+    },
+    CMD_EDGES => {
+      if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
+        return multi_graph.read_edges(context);
+      }
+    },
+    CMD_MUTUAL_SCORES => {
+      if let Ok(ego) = rmp_serde::from_slice(payload.as_slice()) {
+        return multi_graph.read_mutual_scores(context, ego);
+      }
+    },
+    _ => {
+      return error!("decode_and_handle_request", "Unknown command: `{}`", command);
     }
-  } else if command == CMD_LOG_LEVEL {
-    if let Ok(log_level) = rmp_serde::from_slice(payload.as_slice()) {
-      return write_log_level(log_level);
-    }
-  } else if command == CMD_RESET {
-    if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
-      return multi_graph.write_reset();
-    }
-  } else if command == CMD_RECALCULATE_ZERO {  
-    if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
-      return multi_graph.write_recalculate_zero();
-    }
-  } else if command == CMD_NODE_LIST {
-    if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
-      return multi_graph.read_node_list();
-    }
-  } else if command == CMD_NODE_SCORE_NULL {
-    if let Ok((ego, target)) = rmp_serde::from_slice(payload.as_slice()) {
-      return multi_graph.read_node_score_null(ego, target);
-    }
-  } else if command == CMD_SCORES_NULL {
-    if let Ok(ego) = rmp_serde::from_slice(payload.as_slice()) {
-      return multi_graph.read_scores_null(ego);
-    }
-  } else if command == CMD_NODE_SCORE {
-    if let Ok((ego, target)) = rmp_serde::from_slice(payload.as_slice()) {
-      return multi_graph.read_node_score(context, ego, target);
-    }
-  } else if command == CMD_SCORES {
-    if let Ok((ego, kind, hide_personal, lt, lte, gt, gte, index, count)) = rmp_serde::from_slice(payload.as_slice()) {
-      return multi_graph.read_scores(context, ego, kind, hide_personal, lt, lte, gt, gte, index, count);
-    }
-  } else if command == CMD_PUT_EDGE {
-    if let Ok((src, dst, amount)) = rmp_serde::from_slice(payload.as_slice()) {
-      return multi_graph.write_put_edge(context, src, dst, amount);
-    }
-  } else if command == CMD_DELETE_EDGE {
-    if let Ok((src, dst)) = rmp_serde::from_slice(payload.as_slice()) {
-      return multi_graph.write_delete_edge(context, src, dst);
-    }
-  } else if command == CMD_DELETE_NODE {
-    if let Ok(node) = rmp_serde::from_slice(payload.as_slice()) {
-      return multi_graph.write_delete_node(context, node);
-    }
-  } else if command == CMD_GRAPH {
-    if let Ok((ego, focus, positive_only, index, count)) = rmp_serde::from_slice(payload.as_slice()) {
-      return multi_graph.read_graph(context, ego, focus, positive_only, index, count);
-    }
-  } else if command == CMD_CONNECTED {
-    if let Ok(node) = rmp_serde::from_slice(payload.as_slice()) {
-      return multi_graph.read_connected(context, node);
-    }
-  } else if command == CMD_EDGES {
-    if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
-      return multi_graph.read_edges(context);
-    }
-  } else if command == CMD_MUTUAL_SCORES {
-    if let Ok(ego) = rmp_serde::from_slice(payload.as_slice()) {
-      return multi_graph.read_mutual_scores(context, ego);
-    }
-  } else {
-    return error!("decode_and_handle_request", "Unknown command: `{}`", command);
   }
 
   return error!("decode_and_handle_request", "Invalid payload for command `{}`: {:?}", command, payload);
@@ -1378,24 +1396,9 @@ fn worker_callback(multi_graph : Arc<Mutex<AugMultiGraph>>, aio : Aio, ctx : &Co
   };
 }
 
-pub fn main_sync() -> Result<(), BoxedError> {
-  log_info!("Starting server {} at {}", VERSION, *SERVICE_URL);
-  log_info!("NUM_WALK={}", *NUM_WALK);
-
-  let mut multi_graph = AugMultiGraph::new()?;
-
-  let s = Socket::new(Protocol::Rep0)?;
-
-  s.listen(&SERVICE_URL)?;
-
-  loop {
-    let request : Message = s.recv()?;
-    let reply   : Vec<u8> = process(&mut multi_graph, request);
-    let _ = s.send(reply.as_slice()).map_err(|(_, e)| e)?;
-  }
-}
-
 pub fn main_async(threads : usize) -> Result<(), BoxedError> {
+  let threads = if threads < 1 { 1 } else { threads };
+
   log_info!("Starting server {} at {}, {} threads", VERSION, *SERVICE_URL, threads);
   log_info!("NUM_WALK={}", *NUM_WALK);
 

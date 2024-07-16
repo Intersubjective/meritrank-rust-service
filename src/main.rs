@@ -5,7 +5,7 @@ pub mod astar;
 #[cfg(test)]
 mod tests;
 
-use crate::service::{main_async, main_sync, THREADS};
+use crate::service::{main_async, THREADS};
 use ctrlc;
 
 fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
@@ -14,9 +14,5 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     std::process::exit(0)
   })?;
 
-  if *THREADS > 1 {
-    main_async(*THREADS)
-  } else {
-    main_sync()
-  }
+  main_async(*THREADS)
 } 
