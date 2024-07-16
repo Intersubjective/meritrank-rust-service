@@ -450,6 +450,9 @@ impl AugMultiGraph {
     let graph = self.graph_from("")?;
 
     for id in 0..infos.len() {
+      if (id % 100) == 90 {
+        log_trace!("{}%", (id * 100) / infos.len());
+      }
       if infos[id].kind == NodeKind::User {
         graph.calculate(id, num_walk)?;
       }
@@ -1211,7 +1214,10 @@ impl AugMultiGraph {
     {
       let zero = self.node_id_from_name(ZERO_NODE.as_str())?;
 
-      for (node_id, amount) in nodes.iter() {
+      for (k, (node_id, amount)) in nodes.iter().enumerate() {
+        if (k % 100) == 90 {
+          log_trace!("{}%", (k * 100) / nodes.len());
+        }
         self.set_edge("", zero, *node_id, *amount)?;
       }
     }
@@ -1275,13 +1281,24 @@ fn perform_command(
       _ => {},
     };
     match data.graph_readable.lock() {
-      Ok(ref mut x) => x.copy_from(graph.deref_mut()),
+      Ok(ref mut x) => {
+        x.copy_from(graph.deref_mut());
+      }
       Err(e) => {
         return error!("perform_command", "{}", e);
       },
     };
     if let Some(x) = res {
       return x;
+    }
+  } else if command.id == CMD_SYNC {
+    if let Ok(()) = rmp_serde::from_slice(command.payload.as_slice()) {
+      let mut queue = data.queue_commands.lock().expect("Mutex lock failed");
+      while !queue.is_empty() {
+        log_trace!("wait for queue to be empty");
+        queue = data.cond_done.wait(queue).expect("Condvar wait failed");
+      }
+      return Ok(rmp_serde::to_vec(&())?);
     }
   } else {
     //  Read commands
@@ -1301,15 +1318,6 @@ fn perform_command(
       CMD_LOG_LEVEL => {
         if let Ok(log_level) = rmp_serde::from_slice(command.payload.as_slice()) {
           return write_log_level(log_level);
-        }
-      },
-      CMD_SYNC => {
-        if let Ok(()) = rmp_serde::from_slice(command.payload.as_slice()) {
-          let mut queue = data.queue_commands.lock().expect("Mutex lock failed");
-          while !queue.is_empty() {
-            queue = data.cond_done.wait(queue).expect("Condvar wait failed");
-          }
-          return Ok(rmp_serde::to_vec(&())?);
         }
       },
       //  Read commands
@@ -1381,6 +1389,7 @@ fn command_queue_thread(data : Data) {
       };
     }
     queue.clear();
+    log_trace!("notify done");
     data.cond_done.notify_all();
     queue = data.cond_add.wait(queue).expect("Condvar wait failed");
   }
@@ -1394,6 +1403,7 @@ fn put_for_write(
 
   let mut queue = data.queue_commands.lock().expect("Mutex lock failed");
   queue.push(command);
+  log_trace!("notify add");
   data.cond_add.notify_one();
 }
 
