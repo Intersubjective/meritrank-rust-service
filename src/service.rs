@@ -1,7 +1,7 @@
 use std::{
   sync::atomic::{AtomicBool, Ordering},
   collections::HashMap,
-  sync::{Arc, Mutex, RwLock},
+  sync::{Arc, Mutex},
   ops::DerefMut,
   env::var,
   string::ToString,
@@ -10,7 +10,7 @@ use std::{
 };
 use chrono;
 use itertools::Itertools;
-use nng::{Aio, AioResult, Context, Message, Protocol, Socket};
+use nng::{Aio, AioResult, Context, Protocol, Socket};
 use petgraph::{visit::EdgeRef, graph::{DiGraph, NodeIndex}};
 use simple_pagerank::Pagerank;
 use meritrank::{MeritRank, Graph, IntMap, NodeId, Neighbors, MeritRankError};
@@ -95,6 +95,7 @@ pub struct NodeInfo {
 
 //  Augmented multi-context graph
 //
+#[derive(Clone)]
 pub struct AugMultiGraph {
   pub node_count : usize,
   pub node_infos : Vec<NodeInfo>,
@@ -102,17 +103,10 @@ pub struct AugMultiGraph {
   pub contexts   : HashMap<String, MeritRank<()>>,
 }
 
-#[derive(Clone, Default)]
-pub struct Command {
-  pub name    : String,
-  pub context : String,
-  pub payload : Vec<u8>,
-}
-
-pub struct DataAndQueue {
-  pub graph_readable : RwLock<AugMultiGraph>,
-  pub graph_writable : Mutex<AugMultiGraph>,
-  pub command_queue  : Mutex<Vec<Command>>,
+#[derive(Clone)]
+pub struct Data {
+  pub graph_readable : Arc<Mutex<AugMultiGraph>>,
+  pub graph_writable : Arc<Mutex<AugMultiGraph>>,
 }
 
 //  ================================================================
@@ -256,6 +250,12 @@ fn get_ranks_or_recalculate(
   }
 }
 
+impl Default for AugMultiGraph {
+  fn default() -> AugMultiGraph {
+    AugMultiGraph::new().expect("Unable to create AugMultiGraph")
+  }
+}
+
 impl AugMultiGraph {
   pub fn new() -> Result<AugMultiGraph, BoxedError> {
     log_trace!("AugMultiGraph::new");
@@ -266,6 +266,13 @@ impl AugMultiGraph {
       node_ids     : HashMap::new(),
       contexts     : HashMap::new(),
     })
+  }
+
+  fn copy_from(&mut self, other : &AugMultiGraph) {
+    self.node_count = other.node_count;
+    self.node_infos = other.node_infos.clone();
+    self.node_ids   = other.node_ids.clone();
+    self.contexts   = other.contexts.clone();
   }
 
   fn reset(&mut self) -> Result<(), BoxedError> {
@@ -610,7 +617,7 @@ impl AugMultiGraph {
           }
           match self.graph_from(context) {
             Ok(graph) => !graph.get_edge(*target_id, node_id).is_some(),
-            Err(x)    => { log_error!("read_scores: {}", x); false },
+            Err(x)    => { log_error!("(read_scores) {}", x); false },
           }
         })
         .map(|(target_id, _, weight)| (target_id, weight))
@@ -630,7 +637,7 @@ impl AugMultiGraph {
       }
       match self.node_info_from_id(im[i].0) {
         Ok(info) => { page.push((ego, info.name.as_str(), im[i].1)); },
-        Err(e)   => { log_error!("read_scores: {}", e); },
+        Err(e)   => { log_error!("(read_scores) {}", e); },
       }
     }
 
@@ -1214,8 +1221,8 @@ impl AugMultiGraph {
 //  ================================================
 
 fn decode_and_handle_request(
-  multi_graph : &mut AugMultiGraph,
-  request     : &[u8]
+  data    : Data,
+  request : &[u8]
 ) -> Result<Vec<u8>, BoxedError> {
   log_trace!("decode_and_handle_request");
 
@@ -1240,118 +1247,149 @@ fn decode_and_handle_request(
       return error!("decode_and_handle_request", "Invalid request: {:?}; decoding error: {}", request, error),
   }
 
-  if !context.is_empty() && (command == CMD_VERSION || command == CMD_LOG_LEVEL || command == CMD_RESET || command == CMD_RECALCULATE_ZERO || command == CMD_NODE_SCORE_NULL || command == CMD_SCORES_NULL || command == CMD_NODE_LIST) {
+  if !context.is_empty() && (
+    command == CMD_VERSION          ||
+    command == CMD_LOG_LEVEL        ||
+    command == CMD_RESET            ||
+    command == CMD_RECALCULATE_ZERO ||
+    command == CMD_NODE_SCORE_NULL  ||
+    command == CMD_SCORES_NULL      ||
+    command == CMD_NODE_LIST
+  ) {
     return error!("decode_and_handle_request", "Context should be empty");
   }
 
-  match command {
-    CMD_VERSION => {
-      if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
-        return read_version();
+  if command == CMD_RESET            ||
+     command == CMD_RECALCULATE_ZERO ||
+     command == CMD_DELETE_EDGE      ||
+     command == CMD_DELETE_NODE      ||
+     command == CMD_PUT_EDGE
+  {
+    //  Write commands
+
+    let mut graph = match data.graph_writable.lock() {
+      Ok(x)  => x,
+      Err(e) => return error!("decode_and_handle_request", "{}", e),
+    };
+    let mut res : Option<_> = None;
+    match command {
+      CMD_RESET => {
+        if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
+          res = Some(graph.write_reset());
+        }
+      },
+      CMD_RECALCULATE_ZERO => {
+        if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
+          res = Some(graph.write_recalculate_zero());
+        }
+      },
+      CMD_DELETE_EDGE => {
+        if let Ok((src, dst)) = rmp_serde::from_slice(payload.as_slice()) {
+          res = Some(graph.write_delete_edge(context, src, dst));
+        }
+      },
+      CMD_DELETE_NODE => {
+        if let Ok(node) = rmp_serde::from_slice(payload.as_slice()) {
+          res = Some(graph.write_delete_node(context, node));
+        }
+      },
+      CMD_PUT_EDGE => {
+        if let Ok((src, dst, amount)) = rmp_serde::from_slice(payload.as_slice()) {
+          res = Some(graph.write_put_edge(context, src, dst, amount));
+        }
+      },
+      _ => {},
+    };
+    match data.graph_readable.lock() {
+      Ok(ref mut x) => x.copy_from(graph.deref_mut()),
+      Err(e) => {
+        return error!("decode_and_handle_request", "{}", e);
+      },
+    };
+    if let Some(x) = res {
+      return x;
+    }
+  } else {
+    //  Read commands
+
+    let mut graph = match data.graph_readable.lock() {
+      Ok(x)  => x,
+      Err(e) => {
+        return error!("decode_and_handle_request", "{}", e);
+      },
+    };
+    match command {
+      CMD_VERSION => {
+        if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
+          return read_version();
+        }
+      },
+      CMD_LOG_LEVEL => {
+        if let Ok(log_level) = rmp_serde::from_slice(payload.as_slice()) {
+          return write_log_level(log_level);
+        }
+      },
+      //  Read commands
+      CMD_NODE_LIST => {
+        if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
+          return graph.read_node_list();
+        }
+      },
+      CMD_NODE_SCORE_NULL => {
+        if let Ok((ego, target)) = rmp_serde::from_slice(payload.as_slice()) {
+          return graph.read_node_score_null(ego, target);
+        }
+      },
+      CMD_SCORES_NULL => {
+        if let Ok(ego) = rmp_serde::from_slice(payload.as_slice()) {
+          return graph.read_scores_null(ego);
+        }
+      },
+      CMD_NODE_SCORE => {
+        if let Ok((ego, target)) = rmp_serde::from_slice(payload.as_slice()) {
+          return graph.read_node_score(context, ego, target);
+        }
+      },
+      CMD_SCORES => {
+        if let Ok((ego, kind, hide_personal, lt, lte, gt, gte, index, count)) = rmp_serde::from_slice(payload.as_slice()) {
+          return graph.read_scores(context, ego, kind, hide_personal, lt, lte, gt, gte, index, count);
+        }
+      },
+      CMD_GRAPH => {
+        if let Ok((ego, focus, positive_only, index, count)) = rmp_serde::from_slice(payload.as_slice()) {
+          return graph.read_graph(context, ego, focus, positive_only, index, count);
+        }
+      },
+      CMD_CONNECTED => {
+        if let Ok(node) = rmp_serde::from_slice(payload.as_slice()) {
+          return graph.read_connected(context, node);
+        }
+      },
+      CMD_EDGES => {
+        if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
+          return graph.read_edges(context);
+        }
+      },
+      CMD_MUTUAL_SCORES => {
+        if let Ok(ego) = rmp_serde::from_slice(payload.as_slice()) {
+          return graph.read_mutual_scores(context, ego);
+        }
+      },
+      _ => {
+        return error!("decode_and_handle_request", "Unknown command: `{}`", command);
       }
-    },
-    CMD_LOG_LEVEL => {
-      if let Ok(log_level) = rmp_serde::from_slice(payload.as_slice()) {
-        return write_log_level(log_level);
-      }
-    },
-    CMD_RESET => {
-      if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
-        return multi_graph.write_reset();
-      }
-    },
-    CMD_RECALCULATE_ZERO => {
-      if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
-        return multi_graph.write_recalculate_zero();
-      }
-    },
-    CMD_NODE_LIST => {
-      if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
-        return multi_graph.read_node_list();
-      }
-    },
-    CMD_NODE_SCORE_NULL => {
-      if let Ok((ego, target)) = rmp_serde::from_slice(payload.as_slice()) {
-        return multi_graph.read_node_score_null(ego, target);
-      }
-    },
-    CMD_SCORES_NULL => {
-      if let Ok(ego) = rmp_serde::from_slice(payload.as_slice()) {
-        return multi_graph.read_scores_null(ego);
-      }
-    },
-    CMD_NODE_SCORE => {
-      if let Ok((ego, target)) = rmp_serde::from_slice(payload.as_slice()) {
-        return multi_graph.read_node_score(context, ego, target);
-      }
-    },
-    CMD_SCORES => {
-      if let Ok((ego, kind, hide_personal, lt, lte, gt, gte, index, count)) = rmp_serde::from_slice(payload.as_slice()) {
-        return multi_graph.read_scores(context, ego, kind, hide_personal, lt, lte, gt, gte, index, count);
-      }
-    },
-    CMD_PUT_EDGE => {
-      if let Ok((src, dst, amount)) = rmp_serde::from_slice(payload.as_slice()) {
-        return multi_graph.write_put_edge(context, src, dst, amount);
-      }
-    },
-    CMD_DELETE_EDGE => {
-      if let Ok((src, dst)) = rmp_serde::from_slice(payload.as_slice()) {
-        return multi_graph.write_delete_edge(context, src, dst);
-      }
-    },
-    CMD_DELETE_NODE => {
-      if let Ok(node) = rmp_serde::from_slice(payload.as_slice()) {
-        return multi_graph.write_delete_node(context, node);
-      }
-    },
-    CMD_GRAPH => {
-      if let Ok((ego, focus, positive_only, index, count)) = rmp_serde::from_slice(payload.as_slice()) {
-        return multi_graph.read_graph(context, ego, focus, positive_only, index, count);
-      }
-    },
-    CMD_CONNECTED => {
-      if let Ok(node) = rmp_serde::from_slice(payload.as_slice()) {
-        return multi_graph.read_connected(context, node);
-      }
-    },
-    CMD_EDGES => {
-      if let Ok(()) = rmp_serde::from_slice(payload.as_slice()) {
-        return multi_graph.read_edges(context);
-      }
-    },
-    CMD_MUTUAL_SCORES => {
-      if let Ok(ego) = rmp_serde::from_slice(payload.as_slice()) {
-        return multi_graph.read_mutual_scores(context, ego);
-      }
-    },
-    _ => {
-      return error!("decode_and_handle_request", "Unknown command: `{}`", command);
     }
   }
 
   return error!("decode_and_handle_request", "Invalid payload for command `{}`: {:?}", command, payload);
 }
 
-fn process(
-  multi_graph : &mut AugMultiGraph,
-  req         : Message
-) -> Vec<u8> {
-  log_trace!("process");
-
-  match decode_and_handle_request(multi_graph, req.as_slice()) {
-    Ok(bytes)  => bytes,
-    Err(error) => match rmp_serde::to_vec(&error.to_string()) {
-      Ok(bytes)  => bytes,
-      Err(error) => {
-        log_error!("(process) Unable to serialize error: {:?}", error);
-        Vec::new()
-      },
-    },
-  }
-}
-
-fn worker_callback(multi_graph : Arc<Mutex<AugMultiGraph>>, aio : Aio, ctx : &Context, res : AioResult) {
+fn worker_callback(
+  data : Data,
+  aio  : Aio,
+  ctx  : &Context,
+  res  : AioResult
+) {
   log_trace!("worker_callback");
 
   match res {
@@ -1365,22 +1403,21 @@ fn worker_callback(multi_graph : Arc<Mutex<AugMultiGraph>>, aio : Aio, ctx : &Co
     },
 
     AioResult::Recv(Ok(req)) => {
-      match multi_graph.lock() {
-        Ok(ref mut guard) => {
-          let msg : Vec<u8> = process(
-            guard.deref_mut(),
-            req
-          );
-          match ctx.send(&aio, msg.as_slice()) {
-            Ok(_) => {},
-            Err(error) => {
-              log_error!("(worker_callback) SEND failed: {:?}", error);
-            }
-          };
+      let msg : Vec<u8> = match decode_and_handle_request(data, req.as_slice()) {
+        Ok(bytes)  => bytes,
+        Err(error) => match rmp_serde::to_vec(&error.to_string()) {
+          Ok(bytes)  => bytes,
+          Err(error) => {
+            log_error!("(worker_callback) Unable to serialize error: {:?}", error);
+            vec![]
+          },
         },
+      };
+      match ctx.send(&aio, msg.as_slice()) {
+        Ok(_) => {},
         Err(error) => {
-          log_error!("(worker_callback) Mutex lock failed: {:?}", error);
-        },
+          log_error!("(worker_callback) SEND failed: {:?}", error);
+        }
       };
     }
 
@@ -1402,19 +1439,22 @@ pub fn main_async(threads : usize) -> Result<(), BoxedError> {
   log_info!("Starting server {} at {}, {} threads", VERSION, *SERVICE_URL, threads);
   log_info!("NUM_WALK={}", *NUM_WALK);
 
-  let multi_graph = Arc::<Mutex<AugMultiGraph>>::new(Mutex::<AugMultiGraph>::new(AugMultiGraph::new()?));
+  let data = Data {
+    graph_readable : Arc::<Mutex<AugMultiGraph>>::new(Mutex::<AugMultiGraph>::new(AugMultiGraph::new()?)),
+    graph_writable : Arc::<Mutex<AugMultiGraph>>::new(Mutex::<AugMultiGraph>::new(AugMultiGraph::new()?)),
+  };
 
   let s = Socket::new(Protocol::Rep0)?;
 
   let workers : Vec<_> = (0..threads)
     .map(|_| {
-      let ctx                = Context::new(&s)?;
-      let ctx_cloned         = ctx.clone();
-      let multi_graph_cloned = multi_graph.clone();
+      let ctx         = Context::new(&s)?;
+      let ctx_cloned  = ctx.clone();
+      let data_cloned = data.clone();
 
       let aio = Aio::new(move |aio, res| {
         worker_callback(
-          multi_graph_cloned.clone(),
+          data_cloned.clone(),
           aio,
           &ctx_cloned,
           res
