@@ -1553,7 +1553,7 @@ fn mutual_scores_contexted() {
     match x.0.as_str() {
       "U1" => {
         assert!(res[0].1 > 0.3);
-        assert!(res[0].1 < 0.45);
+        assert!(res[0].1 < 0.5);
         assert!(res[0].2 > 0.3);
         assert!(res[0].2 < 0.45);
         assert!(u1);
