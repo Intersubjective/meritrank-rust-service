@@ -100,9 +100,10 @@ pub struct AugMultiGraph {
 
 #[derive(Clone)]
 pub struct Command {
-  pub id      : String,
-  pub context : String,
-  pub payload : Vec<u8>,
+  pub id       : String,
+  pub context  : String,
+  pub blocking : bool,
+  pub payload  : Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -1289,11 +1290,12 @@ fn perform_command(
   {
     //  Write commands
 
+    let mut res : Option<_> = None;
     let mut graph = match data.graph_writable.lock() {
       Ok(x)  => x,
       Err(e) => return error!("perform_command", "{}", e),
     };
-    let mut res : Option<_> = None;
+
     match command.id.as_str() {
       CMD_RESET => {
         if let Ok(()) = rmp_serde::from_slice(command.payload.as_slice()) {
@@ -1330,6 +1332,7 @@ fn perform_command(
         return error!("perform_command", "{}", e);
       },
     };
+
     if let Some(x) = res {
       return x;
     }
@@ -1458,11 +1461,12 @@ fn decode_and_handle_request(
   let command : Command;
 
   match rmp_serde::from_slice(request) {
-    Ok((command_value, context_value, payload_value)) => {
+    Ok((command_value, context_value, blocking_value, payload_value)) => {
       command = Command {
-        id      : command_value,
-        context : context_value,
-        payload : payload_value,
+        id       : command_value,
+        context  : context_value,
+        blocking : blocking_value,
+        payload  : payload_value,
       };
 
       if command.context.is_empty() {
@@ -1488,12 +1492,7 @@ fn decode_and_handle_request(
     return error!("decode_and_handle_request", "Context should be empty");
   }
 
-  if command.id == CMD_RESET            ||
-     command.id == CMD_RECALCULATE_ZERO ||
-     command.id == CMD_DELETE_EDGE      ||
-     command.id == CMD_DELETE_NODE      ||
-     command.id == CMD_PUT_EDGE
-  {
+  if !command.blocking {
     put_for_write(&data, command);
     Ok(rmp_serde::to_vec(&())?)
   } else {
