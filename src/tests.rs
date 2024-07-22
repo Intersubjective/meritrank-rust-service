@@ -1464,7 +1464,11 @@ fn node_scores_unknown_context() {
 
   let res : Vec<(String, String, Weight)> = rmp_serde::from_slice(res_bytes.as_slice()).unwrap();
 
-  assert_eq!(res.len(), 0);
+  assert_eq!(res.len(), 1);
+  assert_eq!(res[0].0, "U1");
+  assert_eq!(res[0].1, "U1");
+  assert!(res[0].2 > 0.999);
+  assert!(res[0].2 < 1.001);
 }
 
 #[test]
