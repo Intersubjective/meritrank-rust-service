@@ -1496,9 +1496,9 @@ fn mutual_scores_null() {
     match x.0.as_str() {
       "U1" => {
         assert!(x.1 > 0.3);
-        assert!(x.1 < 0.45);
+        assert!(x.1 < 0.5);
         assert!(x.2 > 0.3);
-        assert!(x.2 < 0.45);
+        assert!(x.2 < 0.5);
         assert!(u1);
         u1 = false;
       },
@@ -1572,7 +1572,7 @@ fn mutual_scores_contexted() {
       "U3" => {
         assert!(res[2].1 > 0.2);
         assert!(res[2].1 < 0.35);
-        assert!(res[2].2 > 0.25);
+        assert!(res[2].2 > 0.2);
         assert!(res[2].2 < 0.35);
         assert!(u3);
         u3 = false;

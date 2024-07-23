@@ -1345,6 +1345,14 @@ fn perform_command(
       }
       return Ok(rmp_serde::to_vec(&())?);
     }
+  } else if command.id == CMD_VERSION {
+    if let Ok(()) = rmp_serde::from_slice(command.payload.as_slice()) {
+      return read_version();
+    }
+  } else if command.id == CMD_LOG_LEVEL {
+    if let Ok(log_level) = rmp_serde::from_slice(command.payload.as_slice()) {
+      return write_log_level(log_level);
+    }
   } else {
     //  Read commands
 
@@ -1355,17 +1363,6 @@ fn perform_command(
       },
     };
     match command.id.as_str() {
-      CMD_VERSION => {
-        if let Ok(()) = rmp_serde::from_slice(command.payload.as_slice()) {
-          return read_version();
-        }
-      },
-      CMD_LOG_LEVEL => {
-        if let Ok(log_level) = rmp_serde::from_slice(command.payload.as_slice()) {
-          return write_log_level(log_level);
-        }
-      },
-      //  Read commands
       CMD_NODE_LIST => {
         if let Ok(()) = rmp_serde::from_slice(command.payload.as_slice()) {
           return graph.read_node_list();
@@ -1425,7 +1422,11 @@ fn command_queue_thread(data : Data) {
   log_trace!("command_queue_thread");
 
   loop {
-    for cmd in queue.iter() {
+    let commands : Vec<_> = queue.clone();
+    queue.clear();
+    std::mem::drop(queue);
+
+    for cmd in commands {
       match perform_command(&data, cmd.clone()) {
         Ok(_)  => {},
         Err(e) => {
@@ -1433,7 +1434,8 @@ fn command_queue_thread(data : Data) {
         },
       };
     }
-    queue.clear();
+
+    queue = data.queue_commands.lock().expect("Mutex lock failed");
     log_trace!("notify done");
     data.cond_done.notify_all();
     queue = data.cond_add.wait(queue).expect("Condvar wait failed");
