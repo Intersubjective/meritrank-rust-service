@@ -5,8 +5,6 @@ pub const CMD_SYNC             : &str = "sync";
 pub const CMD_RESET            : &str = "reset";
 pub const CMD_RECALCULATE_ZERO : &str = "recalculate_zero";
 pub const CMD_NODE_LIST        : &str = "node_list";
-pub const CMD_NODE_SCORE_NULL  : &str = "node_score_null";
-pub const CMD_SCORES_NULL      : &str = "scores_null";
 
 //  With context
 pub const CMD_NODE_SCORE       : &str = "node_score";

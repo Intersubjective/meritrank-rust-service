@@ -1368,16 +1368,6 @@ fn perform_command(
           return graph.read_node_list();
         }
       },
-      CMD_NODE_SCORE_NULL => {
-        if let Ok((ego, target)) = rmp_serde::from_slice(command.payload.as_slice()) {
-          return graph.read_node_score_null(ego, target);
-        }
-      },
-      CMD_SCORES_NULL => {
-        if let Ok(ego) = rmp_serde::from_slice(command.payload.as_slice()) {
-          return graph.read_scores_null(ego);
-        }
-      },
       CMD_NODE_SCORE => {
         if let Ok((ego, target)) = rmp_serde::from_slice(command.payload.as_slice()) {
           return graph.read_node_score(command.context.as_str(), ego, target);
@@ -1487,8 +1477,6 @@ fn decode_and_handle_request(
     command.id == CMD_LOG_LEVEL        ||
     command.id == CMD_RESET            ||
     command.id == CMD_RECALCULATE_ZERO ||
-    command.id == CMD_NODE_SCORE_NULL  ||
-    command.id == CMD_SCORES_NULL      ||
     command.id == CMD_NODE_LIST
   ) {
     return error!("decode_and_handle_request", "Context should be empty");
