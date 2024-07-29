@@ -1,4 +1,4 @@
-use crate::service::*;
+use crate::graph::*;
 
 fn put_testing_edges(graph : &mut AugMultiGraph, context : &str) {
   let _ = graph.write_put_edge(context, "U0cd6bd2dde4f", "B7f628ad203b5",  1.0).unwrap();
@@ -1262,7 +1262,7 @@ fn recalculate_zero_graph_all() {
   println!("Got {} edges", n);
   assert!(n > 25);
   assert!(n < 120);
- }
+}
 
 #[test]
 fn recalculate_zero_graph_positive_only() {
@@ -1313,8 +1313,63 @@ fn recalculate_zero_graph_focus_beacon() {
   assert!(n < 80);
 }
 
-//  In null context, edge weight is always a sum of all contexts.
-//
+#[test]
+fn recalculate_zero_scores() {
+  let mut graph = AugMultiGraph::new().unwrap();
+
+  put_testing_edges(&mut graph, "");
+
+  let _ = graph.write_recalculate_zero().unwrap();
+
+  let res : Vec<(String, String, Weight)> =
+    rmp_serde::from_slice(
+      graph.read_scores("", "Uadeb43da4abb", "B", true, 100.0, false, -100.0, false, 0, u32::MAX)
+        .unwrap()
+        .as_slice()
+    ).unwrap();
+
+  let n = res.len();
+
+  println!("Got {} edges", n);
+  assert!(n > 5);
+  assert!(n < 80);
+}
+
+#[test]
+fn edge_uncontexted() {
+  let mut graph = AugMultiGraph::new().unwrap();
+
+  let _ = graph.write_put_edge("", "U1", "U2", 1.5).unwrap();
+
+  let edges : Vec<(String, String, Weight)> = rmp_serde::from_slice(
+    graph.read_edges("")
+      .unwrap().as_slice()
+  ).unwrap();
+
+  let edges_expected : Vec<(String, String, Weight)> = vec![
+    ("U1".to_string(), "U2".to_string(), 1.5)
+  ];
+
+  assert_eq!(edges, edges_expected);
+}
+
+#[test]
+fn edge_contexted() {
+  let mut graph = AugMultiGraph::new().unwrap();
+
+  let _ = graph.write_put_edge("X", "U1", "U2", 1.5).unwrap();
+
+  let edges : Vec<(String, String, Weight)> = rmp_serde::from_slice(
+    graph.read_edges("X")
+      .unwrap().as_slice()
+  ).unwrap();
+
+  let edges_expected : Vec<(String, String, Weight)> = vec![
+    ("U1".to_string(), "U2".to_string(), 1.5)
+  ];
+
+  assert_eq!(edges, edges_expected);
+}
 
 #[test]
 fn null_context_is_sum() {
@@ -1377,7 +1432,7 @@ fn null_context_invariant() {
 }
 
 #[test]
-fn node_scores_null() {
+fn scores_uncontexted() {
   let mut graph = AugMultiGraph::new().unwrap();
 
   let _ = graph.write_put_edge("", "U1", "U2", 2.0).unwrap();
@@ -1415,7 +1470,7 @@ fn node_scores_null() {
 }
 
 #[test]
-fn node_scores_contexted() {
+fn scores_contexted() {
   let mut graph = AugMultiGraph::new().unwrap();
 
   let _ = graph.write_put_edge("X", "U1", "U2", 2.0).unwrap();
@@ -1453,7 +1508,7 @@ fn node_scores_contexted() {
 }
 
 #[test]
-fn node_scores_unknown_context() {
+fn scores_unknown_context() {
   let mut graph = AugMultiGraph::new().unwrap();
 
   let _ = graph.write_put_edge("X", "U1", "U2", 2.0).unwrap();
@@ -1472,7 +1527,135 @@ fn node_scores_unknown_context() {
 }
 
 #[test]
-fn mutual_scores_null() {
+fn node_list_uncontexted() {
+  let mut graph = AugMultiGraph::new().unwrap();
+
+  let _ = graph.write_put_edge("", "U1", "U2", 2.0).unwrap();
+  let _ = graph.write_put_edge("", "U1", "U3", 1.0).unwrap();
+  let _ = graph.write_put_edge("", "U3", "U2", 3.0).unwrap();
+
+  let res_bytes = graph.read_node_list().unwrap();
+
+  let res : Vec<(String,)> = rmp_serde::from_slice(res_bytes.as_slice()).unwrap();
+
+  let mut has_u1 = false;
+  let mut has_u2 = false;
+  let mut has_u3 = false;
+
+  for (x,) in res {
+    match x.as_str() {
+      "U1" => has_u1 = true,
+      "U2" => has_u2 = true,
+      "U3" => has_u3 = true,
+      _    => assert!(false),
+    }
+  }
+
+  assert!(has_u1);
+  assert!(has_u2);
+  assert!(has_u3);
+}
+
+#[test]
+fn node_list_contexted() {
+  let mut graph = AugMultiGraph::new().unwrap();
+
+  let _ = graph.write_put_edge("X", "U1", "U2", 2.0).unwrap();
+  let _ = graph.write_put_edge("X", "U1", "U3", 1.0).unwrap();
+  let _ = graph.write_put_edge("X", "U3", "U2", 3.0).unwrap();
+
+  let res_bytes = graph.read_node_list().unwrap();
+
+  let res : Vec<(String,)> = rmp_serde::from_slice(res_bytes.as_slice()).unwrap();
+
+  let mut has_u1 = false;
+  let mut has_u2 = false;
+  let mut has_u3 = false;
+
+  for (x,) in res {
+    match x.as_str() {
+      "U1" => has_u1 = true,
+      "U2" => has_u2 = true,
+      "U3" => has_u3 = true,
+      _    => assert!(false),
+    }
+  }
+
+  assert!(has_u1);
+  assert!(has_u2);
+  assert!(has_u3);
+}
+
+#[test]
+fn node_list_mixed() {
+  let mut graph = AugMultiGraph::new().unwrap();
+
+  let _ = graph.write_put_edge("", "U1", "U2", 2.0).unwrap();
+  let _ = graph.write_put_edge("X", "U1", "U3", 1.0).unwrap();
+  let _ = graph.write_put_edge("Y", "U3", "U2", 3.0).unwrap();
+
+  let res_bytes = graph.read_node_list().unwrap();
+
+  let res : Vec<(String,)> = rmp_serde::from_slice(res_bytes.as_slice()).unwrap();
+
+  let mut has_u1 = false;
+  let mut has_u2 = false;
+  let mut has_u3 = false;
+
+  for (x,) in res {
+    match x.as_str() {
+      "U1" => has_u1 = true,
+      "U2" => has_u2 = true,
+      "U3" => has_u3 = true,
+      _    => assert!(false),
+    }
+  }
+
+  assert!(has_u1);
+  assert!(has_u2);
+  assert!(has_u3);
+}
+
+#[test]
+fn node_score_uncontexted() {
+  let mut graph = AugMultiGraph::new().unwrap();
+
+  let _ = graph.write_put_edge("", "U1", "U2", 2.0).unwrap();
+  let _ = graph.write_put_edge("", "U1", "U3", 1.0).unwrap();
+  let _ = graph.write_put_edge("", "U3", "U2", 3.0).unwrap();
+
+  let res_bytes = graph.read_node_score("", "U1", "U2").unwrap();
+
+  let res : Vec<(String, String, Weight)> = rmp_serde::from_slice(res_bytes.as_slice()).unwrap();
+
+  assert_eq!(res.len(), 1);
+  assert_eq!(res[0].0, "U1");
+  assert_eq!(res[0].1, "U2");
+  assert!(res[0].2 > 0.3);
+  assert!(res[0].2 < 0.45);
+}
+
+#[test]
+fn node_score_contexted() {
+  let mut graph = AugMultiGraph::new().unwrap();
+
+  let _ = graph.write_put_edge("X", "U1", "U2", 2.0).unwrap();
+  let _ = graph.write_put_edge("X", "U1", "U3", 1.0).unwrap();
+  let _ = graph.write_put_edge("X", "U3", "U2", 3.0).unwrap();
+
+  let res_bytes = graph.read_node_score("X", "U1", "U2").unwrap();
+
+  let res : Vec<(String, String, Weight)> = rmp_serde::from_slice(res_bytes.as_slice()).unwrap();
+
+  assert_eq!(res.len(), 1);
+  assert_eq!(res[0].0, "U1");
+  assert_eq!(res[0].1, "U2");
+  assert!(res[0].2 > 0.3);
+  assert!(res[0].2 < 0.45);
+}
+
+#[test]
+fn mutual_scores_uncontexted() {
   let mut graph = AugMultiGraph::new().unwrap();
 
   let _ = graph.write_put_edge("", "U1", "U2", 3.0).unwrap();

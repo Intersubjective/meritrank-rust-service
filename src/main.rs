@@ -1,6 +1,8 @@
-pub mod service;
-pub mod commands;
+pub mod log;
+pub mod protocol;
 pub mod astar;
+pub mod graph;
+pub mod service;
 
 #[cfg(test)]
 mod tests;

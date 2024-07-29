@@ -15,4 +15,28 @@ pub const CMD_DELETE_NODE      : &str = "delete_node";
 pub const CMD_GRAPH            : &str = "graph";
 pub const CMD_CONNECTED        : &str = "connected";
 pub const CMD_EDGES            : &str = "edges";
-pub const CMD_MUTUAL_SCORES    : &str = "mutual_scores";
+pub const CMD_MUTUAL_SCORES    : &str = "mutual_scores"; 
+
+#[derive(Clone)]
+pub struct Command {
+  pub id       : String,
+  pub context  : String,
+  pub blocking : bool,
+  pub payload  : Vec<u8>,
+}
+
+pub fn request_encode(_command : &Command) -> Result<Vec<u8>, ()> {
+  todo!()
+}
+
+pub fn request_decode(_request : &[u8]) -> Result<Command, ()> {
+  todo!()
+}
+
+pub fn response_encode<T>(_response : &T) -> Vec<u8> {
+  todo!()
+}
+
+pub fn response_decode<T>(_response : &[u8]) -> T {
+  todo!()
+}
