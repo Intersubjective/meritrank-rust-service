@@ -1,29 +1,40 @@
 //  ================================================================
 //
-//    Iterative general implementation for
-//    the A* graph search algorithm
+//    astar.rs
 //
-//  ================================================================
+//  Iterative general implementation for
+//  the A* graph search algorithm
+//
+//  ----------------------------------------------------------------
 //
 //    (C) 2024 Mitya Selivanov <guattari.tech>, MIT License
 //
 //  ================================================================
 
 #[allow(non_camel_case_types)]
-pub mod astar {
+mod astar_internal {
   use std::{ops::Add, fmt::Debug};
 
+  #[derive(Debug, Clone, PartialEq, Default)]
+  pub struct Neighbor_Request<Node_Id> {
+    pub node  : Node_Id,
+    pub index : usize,
+  }
+
   #[derive(Debug, Clone, PartialEq)]
-  pub enum Status {
+  pub enum Status<Node_Id> {
     PROGRESS,
     SUCCESS,
     FAIL,
+    OUT_OF_MEMORY,
+    NEIGHBOR(Neighbor_Request<Node_Id>),
   }
 
   #[derive(Debug, Clone, Default)]
   pub struct Link<Node_Id, Cost> {
     pub neighbor       : Node_Id,
     pub exact_distance : Cost,
+    pub estimate       : Cost,
   }
 
   #[derive(Debug, Clone, Default)]
@@ -35,16 +46,27 @@ pub mod astar {
     pub count          : usize,
   }
 
+  #[derive(Debug, Clone, PartialEq)]
+  pub enum Stage {
+    SEARCH_NEAREST,
+    ENUM_NEIGHBORS,
+  }
+
+  #[derive(Clone)]
   pub struct State<Node_Id, Cost> {
-    pub open             : Vec<Node<Node_Id, Cost>>,
-    pub closed           : Vec<Node<Node_Id, Cost>>,
+    pub stage            : Stage,
+    pub num_open         : usize,
+    pub num_closed       : usize,
     pub source           : Node_Id,
     pub destination      : Node_Id,
     pub closest_index    : usize,
     pub closest_estimate : Cost,
+    pub node             : Option<Node<Node_Id, Cost>>,
+    pub neighbor_index   : usize,
   }
 
   pub fn init<Node_Id, Cost>(
+    open        : &mut [Node<Node_Id, Cost>],
     source      : Node_Id,
     destination : Node_Id,
     max_cost    : Cost
@@ -53,226 +75,289 @@ pub mod astar {
       Node_Id : Clone,
       Cost    : Clone + Default
   {
-    let source_node = Node::<Node_Id, Cost> {
-      id             : source.clone(),
-      previous       : None,
-      exact_distance : Cost::default(),
-      estimate       : max_cost.clone(),
-      count          : 1,
-    };
-
-    let mut open   : Vec<Node<Node_Id, Cost>> = vec![source_node];
-    let mut closed : Vec<Node<Node_Id, Cost>> = vec![];
-
-    open.reserve(128);
-    closed.reserve(128);
+    if open.len() != 0 {
+      open[0] = Node::<Node_Id, Cost> {
+        id             : source.clone(),
+        previous       : None,
+        exact_distance : Cost::default(),
+        estimate       : max_cost.clone(),
+        count          : 1,
+      };
+    }
 
     return State {
-      open,
-      closed,
+      stage      : Stage::SEARCH_NEAREST,
+      num_open   : if open.len() != 0 { 1 } else { 0 },
+      num_closed : 0,
       source,
       destination,
       closest_index    : 0,
       closest_estimate : max_cost,
+      node             : None,
+      neighbor_index   : 0,
     };
   }
 
   pub fn path<Node_Id, Cost>(
-    state : &mut State<Node_Id, Cost>
-  ) -> Option<Vec<Node_Id>>
+    closed   : &[Node<Node_Id, Cost>],
+    state    : &State<Node_Id, Cost>,
+    node_ids : &mut [Node_Id]
+  ) -> usize
     where
       Node_Id : Clone + PartialEq
   {
-    if state.closed.is_empty() || state.closest_index >= state.closed.len() {
-      return None;
+    if closed.is_empty()                       ||
+       state.closest_index >= state.num_closed ||
+       node_ids.len() < state.num_closed {
+      return 0;
     }
 
     let mut current = state.closest_index;
 
-    let mut backward : Vec<Node_Id> = vec![state.closed[current].id.clone()];
-    backward.reserve_exact(state.closed[current].count);
+    let mut num_nodes : usize = 1;
+    node_ids[0] = closed[current].id.clone();
 
     loop {
-      if backward[backward.len() - 1] == state.source {
+      if node_ids[num_nodes - 1] == state.source {
         break;
       }
 
-      if backward.len() > state.closed.len() {
-        return None;
+      if num_nodes >= state.num_closed {
+        return 0;
       }
 
       let mut index = usize::MAX;
-      for i in 0..state.closed.len() {
-        if Some(state.closed[i].id.clone()) == state.closed[current].previous {
+      for i in 0..state.num_closed {
+        if Some(closed[i].id.clone()) == closed[current].previous {
           index = i;
           break;
         }
       }
 
       if index == usize::MAX {
-        return None;
+        return 0;
       }
 
-      backward.push(state.closed[index].id.clone());
+      node_ids[num_nodes] = closed[index].id.clone();
+      num_nodes += 1;
       current = index;
     }
 
-    let mut forward = Vec::<Node_Id>::new();
-    forward.reserve_exact(backward.len());
-
-    for i in 1..=backward.len() {
-      forward.push(backward[backward.len() - i].clone());
+    for i in 0..num_nodes/2 {
+      let x                       = node_ids[i].clone();
+      node_ids[i]                 = node_ids[num_nodes - 1 - i].clone();
+      node_ids[num_nodes - 1 - i] = x;
     }
 
-    return Some(forward);
+    return num_nodes;
   }
 
-  pub fn iteration<Node_Id, Cost, Neighbor, Heuristic, Error_Type>(
-        state     : &mut State<Node_Id, Cost>,
-    mut neighbor  : Neighbor,
-    mut heuristic : Heuristic
-  ) -> Result<Status, Error_Type>
+  pub fn iteration<Node_Id, Cost>(
+    open     : &mut [Node<Node_Id, Cost>],
+    closed   : &mut [Node<Node_Id, Cost>],
+    state    : &mut State<Node_Id, Cost>,
+    neighbor : Option<Link<Node_Id, Cost>>,
+  ) -> Status<Node_Id>
     where
-      Node_Id   : Debug + Clone + Default + PartialEq,
-      Cost      : Debug + Clone + Default + PartialOrd + Add<Output = Cost>,
-      Neighbor  : FnMut(Node_Id, usize) -> Result<Option<Link<Node_Id, Cost>>, Error_Type>,
-      Heuristic : FnMut(Node_Id)        -> Result<Cost, Error_Type>
+      Node_Id : Debug + Clone + Default + PartialEq,
+      Cost    : Debug + Clone + Default + PartialOrd + Add<Output = Cost>,
   {
-    if state.open.is_empty() {
-      return Ok(Status::FAIL);
-    }
-
-    //  Find the nearest node to the destination in the open set
-    //
-
-    let mut index_in_open : usize = 0;
-    for index in 1..state.open.len() {
-      if state.open[index].estimate < state.open[index_in_open].estimate {
-        index_in_open = index;
-      }
-    }
-
-    let nearest_node = state.open[index_in_open].clone();
-    if index_in_open != state.open.len() - 1 {
-      state.open[index_in_open] = state.open[state.open.len() - 1].clone();
-    }
-    state.open.resize(state.open.len() - 1, Node::default());
-
-    //  Check if we reached the destination
-    //
-    if nearest_node.id == state.destination {
-      state.closed.push(nearest_node);
-      state.closest_index    = state.closed.len() - 1;
-      state.closest_estimate = Cost::default();
-
-      //  Finish the search
-      return Ok(Status::SUCCESS);
-    }
-
-    //  Enumerate all neighbors
-    //
-    let mut neighbor_index : usize = 0;
-    loop {
-      //  Get a link to the neighbor node
-      //
-      let link = match neighbor(nearest_node.clone().id, neighbor_index)? {
-        Some(x) => x,
-        None    => break, // There is no more neighbors, so end the loop.
-      };
-
-      //  Calculate distance estimations
-      //
-
-      let exact_distance = nearest_node.clone().exact_distance + link.clone().exact_distance;
-      let estimate       = heuristic(link.clone().neighbor)?;
-
-      let neighbor_node = Node {
-        id             : link.neighbor,
-        previous       : Some(nearest_node.clone().id),
-        exact_distance,
-        estimate,
-        count          : nearest_node.count + 1,
-      };
-
-      //  Check if we reached the destination
-      //
-      if neighbor_node.id == state.destination {
-        state.closed.push(nearest_node);
-        state.closed.push(neighbor_node.clone());
-        state.closest_index    = state.closed.len() - 1;
-        state.closest_estimate = Cost::default();
-
-        //  Finish the search
-        return Ok(Status::SUCCESS);
-      }
-
-      //  Check if this node is already in the closed set
-      //
-
-      let mut index_in_closed = usize::MAX;
-      for i in 0..state.closed.len() {
-        if state.closed[i].id == neighbor_node.id {
-          index_in_closed = i;
-          break;
+    match state.stage {
+      Stage::SEARCH_NEAREST => {
+        if state.num_open == 0 {
+          return Status::FAIL;
         }
-      }
 
-      if index_in_closed != usize::MAX {
-        //  Check if this node has a better distance
-        if neighbor_node.exact_distance < state.closed[index_in_closed].exact_distance {
-          if neighbor_node.estimate < state.closest_estimate {
-            state.closest_index    = index_in_closed;
-            state.closest_estimate = neighbor_node.clone().estimate;
+        //  Check if we need more memory
+        //
+        if state.num_open   + 1 >= open  .len() ||
+           state.num_closed + 2 >= closed.len() {
+          return Status::OUT_OF_MEMORY;
+        }
+
+        //  Find the nearest node to the destination in the open set
+        //
+
+        let mut index_in_open : usize = 0;
+        for index in 1..state.num_open {
+          let node    = open[index].clone();
+          let nearest = open[index_in_open].clone();
+          if node   .exact_distance + node   .estimate <
+             nearest.exact_distance + nearest.estimate {
+            index_in_open = index;
           }
-
-          //  Replace the node
-          state.closed[index_in_closed] = neighbor_node;
         }
 
-        //  Skip this node
-        neighbor_index += 1;
-        continue;
-      }
-
-      //  Check if this node is already in the open set
-      //
-
-      let mut index_in_open : usize = usize::MAX;
-      for i in 0..state.open.len() {
-        if state.open[i].id == neighbor_node.id {
-          index_in_open = i;
-          break;
+        let nearest_node = open[index_in_open].clone();
+        state.node = Some(nearest_node.clone());
+        if index_in_open != state.num_open - 1 {
+          open[index_in_open] = open[state.num_open - 1].clone();
         }
-      }
+        state.num_open -= 1;
 
-      if index_in_open != usize::MAX {
-        //  Check if this node has a better distance
-        if neighbor_node.exact_distance < state.open[index_in_open].exact_distance {
-          //  Replace the node
-          state.open[index_in_open] = neighbor_node;
+        //  Check if we reached the destination
+        //
+        if nearest_node.id == state.destination {
+          state.closest_index      = state.num_closed;
+          state.closest_estimate   = Cost::default();
+          closed[state.num_closed] = nearest_node;
+          state.num_closed += 1;
+
+          //  Finish the search
+          return Status::SUCCESS;
         }
 
-        //  Skip this node
-        neighbor_index += 1;
-        continue;
-      }
+        //  Proceed to the neighbors enumeration stage
+        //
 
-      state.open.push(neighbor_node);
+        state.stage          = Stage::ENUM_NEIGHBORS;
+        state.neighbor_index = 0;
 
-      //  Proceed to the next neighbor node
-      neighbor_index += 1;
-    }
+        return Status::NEIGHBOR(Neighbor_Request {
+          node  : nearest_node.id,
+          index : state.neighbor_index,
+        });
+      },
 
-    if nearest_node.estimate < state.closest_estimate {
-      state.closest_index    = state.closed.len();
-      state.closest_estimate = nearest_node.clone().estimate;
-    }
+      Stage::ENUM_NEIGHBORS => match state.node.clone() {
+        None               => panic!(),
+        Some(nearest_node) => match neighbor {
+          Some(link) => {
+            //  Check if we need more memory
+            //
+            if state.num_open + 1 >= open.len() {
+              return Status::OUT_OF_MEMORY;
+            }
 
-    state.closed.push(nearest_node);
+            //  Calculate distance estimations
+            //
 
-    return Ok(Status::PROGRESS);
+            let exact_distance = nearest_node.clone().exact_distance + link.clone().exact_distance;
+            let estimate       = link.clone().estimate;
+
+            let neighbor_node = Node {
+              id             : link.neighbor,
+              previous       : Some(nearest_node.clone().id),
+              exact_distance,
+              estimate,
+              count          : nearest_node.count + 1,
+            };
+
+            //  Check if we reached the destination
+            //
+            if neighbor_node.id == state.destination {
+              state.closest_index          = state.num_closed + 1;
+              state.closest_estimate       = Cost::default();
+              closed[state.num_closed]     = nearest_node;
+              closed[state.num_closed + 1] = neighbor_node.clone();
+              state.node        = None;
+              state.num_closed += 2;
+
+              //  Finish the search
+              return Status::SUCCESS;
+            }
+
+            //  Check if this node is already in the closed set
+            //
+
+            let mut index_in_closed = usize::MAX;
+            for i in 0..state.num_closed {
+              if closed[i].id == neighbor_node.id {
+                index_in_closed = i;
+                break;
+              }
+            }
+
+            if index_in_closed != usize::MAX {
+              //  Check if this node has a better distance
+              if neighbor_node.exact_distance < closed[index_in_closed].exact_distance {
+                if neighbor_node.estimate < state.closest_estimate {
+                  state.closest_index    = index_in_closed;
+                  state.closest_estimate = neighbor_node.clone().estimate;
+                }
+
+                //  Replace the node
+                closed[index_in_closed] = neighbor_node;
+              }
+
+              //  Skip this node and proceed to the next neighbor node
+              //
+
+              state.neighbor_index += 1;
+
+              return Status::NEIGHBOR(Neighbor_Request {
+                node  : nearest_node.id,
+                index : state.neighbor_index,
+              });
+            }
+
+            //  Check if this node is already in the open set
+            //
+
+            let mut index_in_open : usize = usize::MAX;
+            for i in 0..state.num_open {
+              if open[i].id == neighbor_node.id {
+                index_in_open = i;
+                break;
+              }
+            }
+
+            if index_in_open != usize::MAX {
+              //  Check if this node has a better distance
+              if neighbor_node.exact_distance < open[index_in_open].exact_distance {
+                //  Replace the node
+                open[index_in_open] = neighbor_node;
+              }
+
+              //  Skip this node and proceed to the next neighbor node
+              //
+
+              state.neighbor_index += 1;
+
+              return Status::NEIGHBOR(Neighbor_Request {
+                node  : nearest_node.id,
+                index : state.neighbor_index,
+              });
+            }
+
+            open[state.num_open] = neighbor_node;
+            state.num_open += 1;
+
+            //  Proceed to the next neighbor node
+            //
+
+            state.neighbor_index += 1;
+
+            return Status::NEIGHBOR(Neighbor_Request {
+              node  : nearest_node.id,
+              index : state.neighbor_index,
+            });
+          },
+
+          None => {
+            if nearest_node.estimate < state.closest_estimate {
+              state.closest_index    = state.num_closed;
+              state.closest_estimate = nearest_node.clone().estimate;
+            }
+
+            closed[state.num_closed] = nearest_node;
+            state.node               = None;
+            state.num_closed        += 1;
+
+            //  Proceed to the nearest node search
+            //
+
+            state.stage = Stage::SEARCH_NEAREST;
+
+            return Status::PROGRESS;
+          },
+        },
+      },
+    };
   }
 }
+
+pub use astar_internal::*;
 
 //  ================================================================
 //
@@ -282,7 +367,7 @@ pub mod astar {
 
 #[cfg(test)]
 mod tests {
-  use super::astar::*;
+  use super::*;
 
   #[test]
   fn path_exists() {
@@ -297,42 +382,119 @@ mod tests {
       ((7, 5),  1),
     ];
 
-    let neighbor = |id : i64, index : usize| -> Result<Option<Link<i64, i64>>, ()> {
+    let get_neighbor = |id : i64, index : usize| -> Option<Link<i64, i64>> {
       let mut k : usize = 0;
       for ((src, dst), cost) in graph.clone() {
         if src == id {
           if k == index {
-            return Ok(Some(Link::<i64, i64> {
+            return Some(Link::<i64, i64> {
               neighbor       : dst,
-              exact_distance : cost
-            }));
+              exact_distance : cost,
+              estimate       : (8 - dst).abs(),
+            });
           } else {
             k += 1;
           }
         }
       }
-      return Ok(None);
+      return None;
     };
 
-    let heuristic = |id : i64| -> Result<i64, ()> {
-      return Ok((8 - id).abs());
-    };
+    let mut open   : Vec<Node<i64, i64>> = vec![];
+    let mut closed : Vec<Node<i64, i64>> = vec![];
 
-    let mut state = init(0i64, 5i64, i64::MAX);
+    open  .resize(1024, Node::default());
+    closed.resize(1024, Node::default());
 
-    let mut steps = 0;
+    let mut state = init(&mut open, 0i64, 5i64, i64::MAX);
+
+    let mut steps    = 0;
+    let mut neighbor = None;
     loop {
       steps += 1;
-      let status = iteration(&mut state, neighbor, heuristic).unwrap();
-      if status != Status::PROGRESS {
-        assert_eq!(status, Status::SUCCESS);
-        break;
-      }
+
+      match iteration(&mut open, &mut closed, &mut state, neighbor.clone()) {
+        Status::NEIGHBOR(request) => neighbor = get_neighbor(request.node, request.index),
+        Status::SUCCESS           => break,
+        Status::PROGRESS          => {},
+        _                         => assert!(false),
+      };
     }
 
-    let v = path(&mut state).unwrap();
+    let mut v : Vec<i64> = vec![];
+    v.resize(state.num_closed, 0);
+    let n = path(&closed, &state, &mut v);
+    v.resize(n, 0);
 
-    assert_eq!(steps, 5);
+    assert_eq!(steps, 15);
+    assert_eq!(v.len(), 6);
+    assert_eq!(v[0], 0);
+    assert_eq!(v[1], 2);
+    assert_eq!(v[2], 4);
+    assert_eq!(v[3], 6);
+    assert_eq!(v[4], 7);
+    assert_eq!(v[5], 5);
+  }
+
+  #[test]
+  fn out_of_memory() {
+    let graph : Vec<((i64, i64), i64)> = vec![
+      ((0, 1),  5),
+      ((0, 2),  3),
+      ((1, 3),  4),
+      ((2, 4),  1),
+      ((3, 5), 10),
+      ((4, 6),  1),
+      ((6, 7),  1),
+      ((7, 5),  1),
+    ];
+
+    let get_neighbor = |id : i64, index : usize| -> Option<Link<i64, i64>> {
+      let mut k : usize = 0;
+      for ((src, dst), cost) in graph.clone() {
+        if src == id {
+          if k == index {
+            return Some(Link::<i64, i64> {
+              neighbor       : dst,
+              exact_distance : cost,
+              estimate       : (8 - dst).abs(),
+            });
+          } else {
+            k += 1;
+          }
+        }
+      }
+      return None;
+    };
+
+    let mut open   : Vec<Node<i64, i64>> = vec![Node::default()];
+    let mut closed : Vec<Node<i64, i64>> = vec![];
+
+    let mut state = init(&mut open, 0i64, 5i64, i64::MAX);
+
+    let mut steps    = 0;
+    let mut neighbor = None;
+    loop {
+      steps += 1;
+
+      match iteration(&mut open, &mut closed, &mut state, neighbor.clone()) {
+        Status::NEIGHBOR(request) => neighbor = get_neighbor(request.node, request.index),
+        Status::SUCCESS           => break,
+        Status::PROGRESS          => {},
+        Status::OUT_OF_MEMORY     => {
+          open  .resize(open  .len() + 1024, Node::default());
+          closed.resize(closed.len() + 1024, Node::default());
+        },
+        _                         => assert!(false),
+      };
+    }
+
+    let mut v : Vec<i64> = vec![];
+    v.resize(state.num_closed, 0);
+    let n = path(&closed, &state, &mut v);
+    v.resize(n, 0);
+
+    assert_eq!(steps, 16);
     assert_eq!(v.len(), 6);
     assert_eq!(v[0], 0);
     assert_eq!(v[1], 2);
@@ -355,42 +517,51 @@ mod tests {
       ((7, 5),  1),
     ];
 
-    let neighbor = |id : i64, index : usize| -> Result<Option<Link<i64, i64>>, ()> {
+    let get_neighbor = |id : i64, index : usize| -> Option<Link<i64, i64>> {
       let mut k : usize = 0;
       for ((src, dst), cost) in graph.clone() {
         if src == id {
           if k == index {
-            return Ok(Some(Link::<i64, i64> {
+            return Some(Link::<i64, i64> {
               neighbor       : dst,
-              exact_distance : cost
-            }));
+              exact_distance : cost,
+              estimate       : (15 - dst).abs(),
+            });
           } else {
             k += 1;
           }
         }
       }
-      return Ok(None);
+      return None;
     };
 
-    let heuristic = |id : i64| -> Result<i64, ()> {
-      return Ok((15 - id).abs());
-    };
+    let mut open   : Vec<Node<i64, i64>> = vec![];
+    let mut closed : Vec<Node<i64, i64>> = vec![];
 
-    let mut state = init(0i64, 15i64, i64::MAX);
+    open  .resize(1024, Node::default());
+    closed.resize(1024, Node::default());
 
-    let mut steps = 0;
+    let mut state = init(&mut open, 0i64, 15i64, i64::MAX);
+
+    let mut steps    = 0;
+    let mut neighbor = None;
     loop {
       steps += 1;
-      let status = iteration(&mut state, neighbor, heuristic).unwrap();
-      if status != Status::PROGRESS {
-        assert_eq!(status, Status::FAIL);
-        break;
-      }
+
+      match iteration(&mut open, &mut closed, &mut state, neighbor.clone()) {
+        Status::NEIGHBOR(request) => neighbor = get_neighbor(request.node, request.index),
+        Status::FAIL              => break,
+        Status::PROGRESS          => {},
+        _                         => assert!(false),
+      };
     }
 
-    let v = path(&mut state).unwrap();
+    let mut v : Vec<i64> = vec![];
+    v.resize(state.num_closed, 0);
+    let n = path(&closed, &state, &mut v);
+    v.resize(n, 0);
 
-    assert_eq!(steps, 9);
+    assert_eq!(steps, 25);
     assert_eq!(v.len(), 5);
     assert_eq!(v[0], 0);
     assert_eq!(v[1], 2);
@@ -412,40 +583,49 @@ mod tests {
       ((7, 5),  1),
     ];
 
-    let neighbor = |id : i64, index : usize| -> Result<Option<Link<i64, i64>>, ()> {
+    let get_neighbor = |id : i64, index : usize| -> Option<Link<i64, i64>> {
       let mut k : usize = 0;
       for ((src, dst), cost) in graph.clone() {
         if src == id {
           if k == index {
-            return Ok(Some(Link::<i64, i64> {
+            return Some(Link::<i64, i64> {
               neighbor       : dst,
-              exact_distance : cost
-            }));
+              exact_distance : cost,
+              estimate       : (2 - dst).abs(),
+            });
           } else {
             k += 1;
           }
         }
       }
-      return Ok(None);
+      return None;
     };
 
-    let heuristic = |id : i64| -> Result<i64, ()> {
-      return Ok((2 - id).abs());
-    };
+    let mut open   : Vec<Node<i64, i64>> = vec![];
+    let mut closed : Vec<Node<i64, i64>> = vec![];
 
-    let mut state = init(2i64, 2i64, i64::MAX);
+    open  .resize(1024, Node::default());
+    closed.resize(1024, Node::default());
 
-    let mut steps = 0;
+    let mut state = init(&mut open, 2i64, 2i64, i64::MAX);
+
+    let mut steps    = 0;
+    let mut neighbor = None;
     loop {
       steps += 1;
-      let status = iteration(&mut state, neighbor, heuristic).unwrap();
-      if status != Status::PROGRESS {
-        assert_eq!(status, Status::SUCCESS);
-        break;
-      }
+
+      match iteration(&mut open, &mut closed, &mut state, neighbor.clone()) {
+        Status::NEIGHBOR(request) => neighbor = get_neighbor(request.node, request.index),
+        Status::SUCCESS           => break,
+        Status::PROGRESS          => {},
+        _                         => assert!(false),
+      };
     }
 
-    let v = path(&mut state).unwrap();
+    let mut v : Vec<i64> = vec![];
+    v.resize(state.num_closed, 0);
+    let n = path(&closed, &state, &mut v);
+    v.resize(n, 0);
 
     assert_eq!(steps, 1);
     assert_eq!(v.len(), 1);
@@ -455,9 +635,9 @@ mod tests {
   #[test]
   fn cyclic() {
     let graph : Vec<((i64, i64), i64)> = vec![
-      ((0, 1),  5),
+      ((0, 1), 10),
       ((0, 2),  3),
-      ((1, 3),  4),
+      ((1, 3), 20),
       ((2, 4),  1),
       ((3, 5),  1),
       ((4, 6), 10),
@@ -468,42 +648,51 @@ mod tests {
       ((6, 2),  5),
     ];
 
-    let neighbor = |id : i64, index : usize| -> Result<Option<Link<i64, i64>>, ()> {
+    let get_neighbor = |id : i64, index : usize| -> Option<Link<i64, i64>> {
       let mut k : usize = 0;
       for ((src, dst), cost) in graph.clone() {
         if src == id {
           if k == index {
-            return Ok(Some(Link::<i64, i64> {
+            return Some(Link::<i64, i64> {
               neighbor       : dst,
-              exact_distance : cost
-            }));
+              exact_distance : cost,
+              estimate       : (5 - dst).abs(),
+            });
           } else {
             k += 1;
           }
         }
       }
-      return Ok(None);
+      return None;
     };
 
-    let heuristic = |id : i64| -> Result<i64, ()> {
-      return Ok((5 - id).abs());
-    };
+    let mut open   : Vec<Node<i64, i64>> = vec![];
+    let mut closed : Vec<Node<i64, i64>> = vec![];
 
-    let mut state = init(0i64, 5i64, i64::MAX);
+    open  .resize(1024, Node::default());
+    closed.resize(1024, Node::default());
 
-    let mut steps = 0;
+    let mut state = init(&mut open, 0i64, 5i64, i64::MAX);
+
+    let mut steps    = 0;
+    let mut neighbor = None;
     loop {
       steps += 1;
-      let status = iteration(&mut state, neighbor, heuristic).unwrap();
-      if status != Status::PROGRESS {
-        assert_eq!(status, Status::SUCCESS);
-        break;
-      }
+
+      match iteration(&mut open, &mut closed, &mut state, neighbor.clone()) {
+        Status::NEIGHBOR(request) => neighbor = get_neighbor(request.node, request.index),
+        Status::SUCCESS           => break,
+        Status::PROGRESS          => {},
+        _                         => assert!(false),
+      };
     }
 
-    let v = path(&mut state).unwrap();
+    let mut v : Vec<i64> = vec![];
+    v.resize(state.num_closed, 0);
+    let n = path(&closed, &state, &mut v);
+    v.resize(n, 0);
 
-    assert_eq!(steps, 5);
+    assert_eq!(steps, 19);
     assert_eq!(v.len(), 6);
     assert_eq!(v[0], 0);
     assert_eq!(v[1], 2);

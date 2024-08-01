@@ -1,4 +1,4 @@
-use crate::graph::*;
+use crate::operations::*;
 
 fn put_testing_edges(graph : &mut AugMultiGraph, context : &str) {
   let _ = graph.write_put_edge(context, "U0cd6bd2dde4f", "B7f628ad203b5",  1.0).unwrap();

@@ -1,7 +1,7 @@
 pub mod log;
 pub mod protocol;
 pub mod astar;
-pub mod graph;
+pub mod operations;
 pub mod service;
 
 #[cfg(test)]

@@ -16,7 +16,7 @@ use crate::log_verbose;
 use crate::log_trace;
 use crate::error;
 use crate::log::*;
-use crate::astar::astar::*;
+use crate::astar::*;
 
 pub use meritrank::Weight;
 
@@ -672,57 +672,71 @@ impl AugMultiGraph {
       //    A* search
       //
 
-      let neighbor = |node : NodeId, index : usize| -> Result<Option<Link<NodeId, Weight>>, BoxedError> {
-        match graph_cloned.get_node_data(node) {
-          None       => Ok(None),
-          Some(data) => {
-            let kv : Vec<_> = data.neighbors(Neighbors::Positive).iter().skip(index).take(1).collect();
+      let mut open   : Vec<Node<NodeId, Weight>> = vec![];
+      let mut closed : Vec<Node<NodeId, Weight>> = vec![];
 
-            if kv.is_empty() {
-              Ok(None)
-            } else {
-              let n = kv[0].0;
-              let w = kv[0].1;
-             
-              Ok(Some(Link::<NodeId, Weight> {
-                neighbor       : *n,
-                exact_distance : if w.abs() < 0.001 { 1_000_000.0 } else { 1.0 / w },
-              }))
-            }
-          },
-        }
-      };
+      open  .resize(1024, Node::default());
+      closed.resize(1024, Node::default());
 
-      let heuristic = |_node : NodeId| -> Result<Weight, BoxedError> {
-        Ok(0.0)
-      };
+      let mut astar_state = init(&mut open, ego_id, focus_id, 0.0);
 
-      let mut astar_state = init(ego_id, focus_id, Weight::MAX);
-
-      let mut status = Status::PROGRESS;
-      let mut count  = 0;
+      let mut steps    = 0;
+      let mut neighbor = None;
+      let mut status   = Status::PROGRESS;
 
       //  Do 10000 iterations max
 
       for _ in 0..10000 {
-        count += 1;
-        status = iteration(&mut astar_state, neighbor, heuristic)?;
-        if status != Status::PROGRESS {
-          break;
-        }
+        steps += 1;
+        
+        status = iteration(&mut open, &mut closed, &mut astar_state, neighbor.clone());
+
+        match status.clone() {
+          Status::NEIGHBOR(request) => {
+            match graph_cloned.get_node_data(request.node) {
+              None       => neighbor = None,
+              Some(data) => {
+                let kv : Vec<_> = data.neighbors(Neighbors::Positive).iter().skip(request.index).take(1).collect();
+
+                if kv.is_empty() {
+                  neighbor = None;
+                } else {
+                  let n = kv[0].0;
+                  let w = kv[0].1;
+
+                  neighbor = Some(Link::<NodeId, Weight> {
+                    neighbor       : *n,
+                    exact_distance : if w.abs() < 0.001 { 1_000_000.0 } else { 1.0 / w },
+                    estimate       : 0.0,
+                  });
+                }
+              },
+            }
+          },
+          Status::OUT_OF_MEMORY => {
+            open  .resize(open  .len() * 2, Node::default());
+            closed.resize(closed.len() * 2, Node::default());
+          },
+          Status::SUCCESS  => break,
+          Status::FAIL     => break,
+          Status::PROGRESS => {},
+        };
       }
 
-      log_trace!("did {} A* iterations", count);
+      log_trace!("did {} A* iterations", steps);
 
       if status == Status::SUCCESS {
         log_trace!("path found");
-      } else if status == Status::PROGRESS {
-        log_error!("Unable to find a path from {} to {}", ego_id, focus_id);
       } else if status == Status::FAIL {
         log_error!("Path does not exist from {} to {}", ego_id, focus_id);
+      } else {
+        log_error!("Unable to find a path from {} to {}", ego_id, focus_id);
       }
 
-      let ego_to_focus = path(&mut astar_state).ok_or("Unable to build a path")?;
+      let mut ego_to_focus : Vec<NodeId> = vec![];
+      ego_to_focus.resize(astar_state.num_closed, 0);
+      let n = path(&closed, &astar_state, &mut ego_to_focus);
+      ego_to_focus.resize(n, 0);
 
       for node in ego_to_focus.iter() {
         log_trace!("path: {}", self.node_info_from_id(*node)?.name);
