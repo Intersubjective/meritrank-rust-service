@@ -1767,3 +1767,108 @@ fn mutual_scores_contexted() {
     };
   }
 }
+
+#[test]
+fn graph_uncontexted() {
+  let mut graph = AugMultiGraph::new().unwrap();
+
+  let _ = graph.write_put_edge("", "U1", "U2", 2.0).unwrap();
+  let _ = graph.write_put_edge("", "U1", "U3", 1.0).unwrap();
+  let _ = graph.write_put_edge("", "U2", "U3", 3.0).unwrap();
+
+  let res_bytes = graph.read_graph("", "U1", "U2", false, 0, 10000).unwrap();
+
+  let res : Vec<(String, String, Weight)> = rmp_serde::from_slice(res_bytes.as_slice()).unwrap();
+
+  assert_eq!(res.len(), 2);
+
+  let mut has_u1 = false;
+  let mut has_u2 = false;
+
+  for x in res {
+    match x.0.as_str() {
+      "U1" => {
+        assert_eq!(x.1, "U2");
+        assert!(x.2 > 1.8);
+        assert!(x.2 < 2.2);
+        has_u1 = true;
+      },
+
+      "U2" => {
+        assert_eq!(x.1, "U3");
+        assert!(x.2 > 2.8);
+        assert!(x.2 < 3.2);
+        has_u2 = true;
+      },
+
+      _ => panic!(),
+    }
+  }
+
+  assert!(has_u1);
+  assert!(has_u2);
+}
+
+#[test]
+fn graph_contexted() {
+  let mut graph = AugMultiGraph::new().unwrap();
+
+  let _ = graph.write_put_edge("X", "U1", "U2", 2.0).unwrap();
+  let _ = graph.write_put_edge("X", "U1", "U3", 1.0).unwrap();
+  let _ = graph.write_put_edge("X", "U2", "U3", 3.0).unwrap();
+
+  let res_bytes = graph.read_graph("X", "U1", "U2", false, 0, 10000).unwrap();
+
+  let res : Vec<(String, String, Weight)> = rmp_serde::from_slice(res_bytes.as_slice()).unwrap();
+
+  assert_eq!(res.len(), 2);
+
+  let mut has_u1 = false;
+  let mut has_u2 = false;
+
+  for x in res {
+    match x.0.as_str() {
+      "U1" => {
+        assert_eq!(x.1, "U2");
+        assert!(x.2 > 1.8);
+        assert!(x.2 < 2.2);
+        has_u1 = true;
+      },
+
+      "U2" => {
+        assert_eq!(x.1, "U3");
+        assert!(x.2 > 2.8);
+        assert!(x.2 < 3.2);
+        has_u2 = true;
+      },
+
+      _ => panic!(),
+    }
+  }
+
+  assert!(has_u1);
+  assert!(has_u2);
+}
+
+#[test]
+fn graph_empty() {
+  let mut graph = AugMultiGraph::new().unwrap();
+
+  let _ = graph.write_put_edge("", "U1", "U2", 2.0).unwrap();
+  let _ = graph.write_put_edge("", "U1", "U3", 1.0).unwrap();
+  let _ = graph.write_put_edge("", "U2", "U3", 3.0).unwrap();
+
+  let _ = graph.write_delete_edge("", "U1", "U2").unwrap();
+  let _ = graph.write_delete_edge("", "U1", "U3").unwrap();
+  let _ = graph.write_delete_edge("", "U2", "U3").unwrap();
+
+  let res_bytes = graph.read_graph("", "U1", "U2", false, 0, 10000).unwrap();
+
+  let res : Vec<(String, String, Weight)> = rmp_serde::from_slice(res_bytes.as_slice()).unwrap();
+
+  for x in res.iter() {
+    println!("{} -> {}: {}", x.0, x.1, x.2);
+  }
+
+  assert_eq!(res.len(), 0);
+}
