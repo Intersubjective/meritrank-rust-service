@@ -38,18 +38,6 @@ macro_rules! log_error {
 }
 
 #[macro_export]
-macro_rules! error {
-  ($func:expr, $($arg:expr),*) => {
-    {
-      if ERROR.load(Ordering::Relaxed) {
-        log_with_time(format!("ERROR   ({}) ", $func).as_str(), format!($($arg),*).as_str());
-      }
-      Err(format!($($arg),*).into())
-    }
-  };
-}
-
-#[macro_export]
 macro_rules! log_warning {
   ($($arg:expr),*) => {
     if WARNING.load(Ordering::Relaxed) {

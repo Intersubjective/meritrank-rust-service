@@ -1,3 +1,12 @@
+use std::sync::atomic::Ordering;
+use crate::log_error;
+// use crate::log_warning;
+// use crate::log_info;
+// use crate::log_verbose;
+// use crate::log_trace;
+// use crate::error;
+use crate::log::*;
+
 //  No context
 pub const CMD_VERSION          : &str = "version";
 pub const CMD_LOG_LEVEL        : &str = "log_level";
@@ -25,18 +34,57 @@ pub struct Command {
   pub payload  : Vec<u8>,
 }
 
-pub fn request_encode(_command : &Command) -> Result<Vec<u8>, ()> {
-  todo!()
+pub fn encode_request(command : &Command) -> Result<Vec<u8>, String> {
+  match rmp_serde::to_vec(&(
+    command.id.clone(),
+    command.context.clone(),
+    command.blocking,
+    command.payload.clone()
+  )) {
+    Ok(x)  => Ok(x),
+    Err(s) => Err(s.to_string()),
+  }
 }
 
-pub fn request_decode(_request : &[u8]) -> Result<Command, ()> {
-  todo!()
+pub fn decode_request(request : &[u8]) -> Result<Command, ()> {
+  match rmp_serde::from_slice(request) {
+    Ok((command_value, context_value, blocking_value, payload_value)) => {
+      Ok(Command {
+        id       : command_value,
+        context  : context_value,
+        blocking : blocking_value,
+        payload  : payload_value,
+      })
+    },
+    Err(e) => {
+      log_error!("(request_decode) {}", e);
+      Err(())
+    },
+  }
 }
 
-pub fn response_encode<T>(_response : &T) -> Vec<u8> {
-  todo!()
+pub fn encode_response<T>(response : &T) -> Result<Vec<u8>, ()>
+  where T : serde::ser::Serialize
+{
+  match rmp_serde::to_vec(response) {
+    Ok(x)  => Ok(x),
+    Err(e) => {
+      match rmp_serde::to_vec(&e.to_string()) {
+        Ok(x) => Ok(x),
+        Err(e) => {
+          log_error!("(response_encode) {}", e);
+          Err(())
+        }
+      }
+    }
+  }
 }
 
-pub fn response_decode<T>(_response : &[u8]) -> T {
-  todo!()
+pub fn decode_response<'a, T>(response : &'a [u8]) -> Result<T, String>
+   where T : Clone + serde::Deserialize<'a>
+{
+  match rmp_serde::from_slice::<T>(response) {
+    Ok(x)  => Ok(x.clone()),
+    Err(e) => Err(e.to_string()),
+  }
 }
