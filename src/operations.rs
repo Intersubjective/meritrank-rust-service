@@ -72,11 +72,12 @@ pub struct NodeInfo {
 //
 #[derive(Clone)]
 pub struct AugMultiGraph {
-  pub node_count : usize,
-  pub node_infos : Vec<NodeInfo>,
-  pub dummy_info : NodeInfo,
-  pub node_ids   : HashMap<String, NodeId>,
-  pub contexts   : HashMap<String, MeritRank>,
+  pub node_count  : usize,
+  pub node_infos  : Vec<NodeInfo>,
+  pub dummy_info  : NodeInfo,
+  pub dummy_graph : MeritRank,
+  pub node_ids    : HashMap<String, NodeId>,
+  pub contexts    : HashMap<String, MeritRank>,
 }
 
 //  ================================================================
@@ -107,14 +108,15 @@ impl AugMultiGraph {
     log_trace!("AugMultiGraph::new");
 
     AugMultiGraph {
-      node_count : 0,
-      node_infos : Vec::new(),
-      dummy_info : NodeInfo {
+      node_count  : 0,
+      node_infos  : Vec::new(),
+      dummy_info  : NodeInfo {
         kind : NodeKind::Unknown,
         name : "".to_string(),
       },
-      node_ids   : HashMap::new(),
-      contexts   : HashMap::new(),
+      dummy_graph : MeritRank::new(Graph::new()),
+      node_ids    : HashMap::new(),
+      contexts    : HashMap::new(),
     }
   }
 
@@ -157,7 +159,7 @@ impl AugMultiGraph {
 
   //  Get mutable graph from a context
   //
-  pub fn graph_from(&mut self, context : &str) -> Result<&mut MeritRank, ()> {
+  pub fn graph_from(&mut self, context : &str) -> &mut MeritRank {
     log_trace!("graph_from: `{}`", context);
 
     if !self.contexts.contains_key(context) {
@@ -167,13 +169,7 @@ impl AugMultiGraph {
         log_verbose!("Add context: `{}`", context);
       }
 
-      let mut meritrank = match MeritRank::new(Graph::new()) {
-        Ok(x)  => x,
-        Err(e) => {
-          log_error!("(graph_from) {}", e);
-          return Err(());
-        },
-      };
+      let mut meritrank = MeritRank::new(Graph::new());
 
       for _ in 0..self.node_count {
         meritrank.get_new_nodeid();
@@ -183,59 +179,46 @@ impl AugMultiGraph {
     }
 
     match self.contexts.get_mut(context) {
-      Some(graph) => Ok(graph),
-      None        => {
-        log_error!("(graph_from) Unable to add context `{}`", context);
-        Err(())
+      Some(x) => x,
+      None    => {
+        log_error!("(graph_from) No context: `{}`", context);
+        &mut self.dummy_graph
       },
     }
   }
 
   pub fn add_edge(&mut self, context : &str, src : NodeId, dst : NodeId, amount : Weight) {
     log_trace!("add_edge: `{}` {} {} {}", context, src, dst, amount);
-
-    match self.graph_from(context) {
-      Ok(x) => x.add_edge(src, dst, amount),
-      _     => {},
-    }
+    self.graph_from(context).add_edge(src, dst, amount);
   }
 
   pub fn edge_weight(&mut self, context : &str, src : NodeId, dst : NodeId) -> Weight {
     log_trace!("edge_weight: `{}` {} {}", context, src, dst);
-
-    match self.graph_from(context) {
-      Ok(x) => *x.graph.edge_weight(src, dst).unwrap_or(None).unwrap_or(&0.0),
-      _     => 0.0,
-    }
+    *self.graph_from(context).graph.edge_weight(src, dst).unwrap_or(None).unwrap_or(&0.0)
   }
 
   pub fn all_neighbors(&mut self, context : &str, node : NodeId) -> Vec<(NodeId, Weight)> {
-    match self.graph_from(context) {
-      Err(_) => vec![],
-      Ok(x)  => {
-        let mut v = vec![];
+    let mut v = vec![];
 
-        match x.graph.get_node_data(node) {
-          None => {},
-          Some(data) => {
-            v.reserve_exact(
-              data.neighbors(Neighbors::Positive).len() +
-              data.neighbors(Neighbors::Negative).len()
-            );
+    match self.graph_from(context).graph.get_node_data(node) {
+      None => {},
+      Some(data) => {
+        v.reserve_exact(
+          data.neighbors(Neighbors::Positive).len() +
+          data.neighbors(Neighbors::Negative).len()
+        );
 
-            for x in data.neighbors(Neighbors::Positive) {
-              v.push((*x.0, *x.1));
-            }
-
-            for x in data.neighbors(Neighbors::Negative) {
-              v.push((*x.0, *x.1));
-            }
-          }
+        for x in data.neighbors(Neighbors::Positive) {
+          v.push((*x.0, *x.1));
         }
 
-        v
-      },
+        for x in data.neighbors(Neighbors::Negative) {
+          v.push((*x.0, *x.1));
+        }
+      }
     }
+
+    v
   }
 
   fn get_ranks_or_recalculate(
@@ -245,10 +228,7 @@ impl AugMultiGraph {
   ) -> Vec<(NodeId, Weight)> {
     log_trace!("get_ranks_or_recalculate");
 
-    let graph = match self.graph_from(context) {
-      Ok(x)  => x,
-      Err(_) => return vec![],
-    };
+    let graph = self.graph_from(context);
 
     match graph.get_ranks(node_id, None) {
       Ok(ranks) => ranks,
@@ -284,10 +264,7 @@ impl AugMultiGraph {
   ) -> Weight {
     log_trace!("get_score_or_recalculate");
 
-    let graph = match self.graph_from(context) {
-      Ok(x)  => x,
-      Err(_) => return 0.0,
-    };
+    let graph = self.graph_from(context);
 
     match graph.get_node_score(src_id, dst_id) {
       Ok(score) => score,
@@ -426,10 +403,7 @@ impl AugMultiGraph {
 
     let infos = self.node_infos.clone();
 
-    let graph = match self.graph_from("") {
-      Ok(x) => x,
-      _     => return,
-    };
+    let graph = self.graph_from("");
 
     for id in 0..infos.len() {
       if (id % 100) == 90 {
@@ -547,12 +521,9 @@ impl AugMultiGraph {
           if !hide_personal || (*target_kind != NodeKind::Comment && *target_kind != NodeKind::Beacon) {
             return true;
           }
-          match self.graph_from(context) {
-            Ok(graph) => match graph.graph.edge_weight(*target_id, node_id) {
-              Ok(Some(_)) => false,
-              _           => true,
-            },
-            Err(_) => false,
+          match self.graph_from(context).graph.edge_weight(*target_id, node_id) {
+            Ok(Some(_)) => false,
+            _           => true,
           }
         })
         .map(|(target_id, _, weight)| (target_id, weight))
@@ -715,10 +686,7 @@ impl AugMultiGraph {
     } else {
       log_trace!("search shortest path");
 
-      let graph_cloned = match self.graph_from(context) {
-        Ok(x)  => x.graph.clone(),
-        Err(_) => return vec![],
-      };
+      let graph_cloned = self.graph_from(context).graph.clone();
 
       //  ================================
       //
@@ -1010,13 +978,10 @@ impl AugMultiGraph {
     }
 
     for id in users.iter() {
-      match self.graph_from("") {
-        Ok(x)  => match x.calculate(*id, *NUM_WALK) {
-          Ok(_)  => {},
-          Err(e) => log_error!("(reduced_graph) {}", e),
-        },
-        Err(_) => {},
-      }
+      match self.graph_from("").calculate(*id, *NUM_WALK) {
+        Ok(_)  => {},
+        Err(e) => log_error!("(reduced_graph) {}", e),
+      };
     }
 
     let edges : Vec<(NodeId, NodeId, Weight)> =
