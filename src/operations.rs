@@ -6,7 +6,7 @@ use std::{
 };
 use petgraph::{visit::EdgeRef, graph::{DiGraph, NodeIndex}};
 use simple_pagerank::Pagerank;
-use meritrank::{MeritRank, Graph, NodeId, Neighbors, MeritRankError, constants::EPSILON};
+use meritrank::{MeritRank, Graph, NodeId, MeritRankError, constants::EPSILON};
 
 use crate::log_error;
 use crate::log_warning;
@@ -157,25 +157,56 @@ impl AugMultiGraph {
     }
   }
 
-  //  Get mutable graph from a context
-  //
+  pub fn create_context(&mut self, context : &str) {
+    log_trace!("create_context: `{}`", context);
+
+    if context.is_empty() {
+      log_verbose!("Add context: NULL");
+    } else {
+      log_verbose!("Add context: `{}`", context);
+    }
+
+    let mut graph = MeritRank::new(Graph::new());
+
+    for _ in 0..self.node_count {
+      graph.get_new_nodeid();
+    }
+
+    if !context.is_empty() {
+      match self.contexts.get_mut("") {
+        Some(zero) => {
+          log_verbose!("Copy user edges from NULL into `{}`", context);
+
+          let zero_cloned = zero.clone();
+          let all_nodes   = zero_cloned.graph.nodes.iter().enumerate();
+
+          for (src_id, src) in all_nodes {
+            if self.node_info_from_id(src_id).kind == NodeKind::User {
+              let all_edges =
+                        src.pos_edges.iter()
+                .chain( src.neg_edges.iter() );
+
+              for (dst_id, weight) in all_edges {
+                if self.node_info_from_id(*dst_id).kind == NodeKind::User {
+                  graph.set_edge(src_id, *dst_id, *weight);
+                }
+              }
+            }
+          }
+        },
+
+        _ => {},
+      }
+    }
+
+    self.contexts.insert(context.to_string(), graph);
+  }
+
   pub fn graph_from(&mut self, context : &str) -> &mut MeritRank {
     log_trace!("graph_from: `{}`", context);
 
     if !self.contexts.contains_key(context) {
-      if context.is_empty() {
-        log_verbose!("Add context: NULL");
-      } else {
-        log_verbose!("Add context: `{}`", context);
-      }
-
-      let mut meritrank = MeritRank::new(Graph::new());
-
-      for _ in 0..self.node_count {
-        meritrank.get_new_nodeid();
-      }
-
-      self.contexts.insert(context.to_string(), meritrank);
+      self.create_context(context);
     }
 
     match self.contexts.get_mut(context) {
@@ -185,11 +216,6 @@ impl AugMultiGraph {
         &mut self.dummy_graph
       },
     }
-  }
-
-  pub fn add_edge(&mut self, context : &str, src : NodeId, dst : NodeId, amount : Weight) {
-    log_trace!("add_edge: `{}` {} {} {}", context, src, dst, amount);
-    self.graph_from(context).add_edge(src, dst, amount);
   }
 
   pub fn edge_weight(&mut self, context : &str, src : NodeId, dst : NodeId) -> Weight {
@@ -204,15 +230,15 @@ impl AugMultiGraph {
       None => {},
       Some(data) => {
         v.reserve_exact(
-          data.neighbors(Neighbors::Positive).len() +
-          data.neighbors(Neighbors::Negative).len()
+          data.pos_edges.len() +
+          data.neg_edges.len()
         );
 
-        for x in data.neighbors(Neighbors::Positive) {
+        for x in &data.pos_edges {
           v.push((*x.0, *x.1));
         }
 
-        for x in data.neighbors(Neighbors::Negative) {
+        for x in &data.neg_edges {
           v.push((*x.0, *x.1));
         }
       }
@@ -314,8 +340,8 @@ impl AugMultiGraph {
       self.node_ids.insert(node_name.to_string(), node_id);
     }
 
-    for (context, meritrank) in &mut self.contexts {
-      if meritrank.graph.contains_node(node_id) {
+    for (context, graph) in &mut self.contexts {
+      if graph.graph.contains_node(node_id) {
         continue;
       }
 
@@ -326,7 +352,7 @@ impl AugMultiGraph {
       }
 
       //  HACK!!!
-      while meritrank.get_new_nodeid() < node_id {}
+      while graph.get_new_nodeid() < node_id {}
     }
 
     node_id
@@ -341,19 +367,36 @@ impl AugMultiGraph {
   ) {
     log_trace!("set_edge: `{}` `{}` `{}` {}", context, src, dst, amount);
 
-    if context.is_empty() {
-      log_verbose!("Add edge in NULL: {} -> {} for {}", src, dst, amount);
-      self.add_edge(context, src, dst, amount);
+    if self.node_info_from_id(src).kind == NodeKind::User &&
+       self.node_info_from_id(dst).kind == NodeKind::User {
+      //  Create context if does not exist
+
+      self.graph_from("");
+      if !context.is_empty() {
+        self.graph_from(context);
+      }
+
+      for (enum_context, graph) in &mut self.contexts {
+        if enum_context.is_empty() {
+          log_verbose!("Set user edge in NULL: {} -> {} for {}", src, dst, amount);
+        } else {
+          log_verbose!("Set user edge in `{}`: {} -> {} for {}", enum_context, src, dst, amount);
+        }
+        graph.set_edge(src, dst, amount);
+      }
+    } else if context.is_empty() {
+      log_verbose!("Set edge in NULL: {} -> {} for {}", src, dst, amount);
+      self.graph_from(context).set_edge(src, dst, amount);
     } else {
       let null_weight = self.edge_weight("",      src, dst);
       let old_weight  = self.edge_weight(context, src, dst);
       let delta       = null_weight + amount - old_weight;
 
-      log_verbose!("Add edge in NULL: {} -> {} for {}", src, dst, delta);
-      self.add_edge("", src, dst, delta);
+      log_verbose!("Set edge in NULL: {} -> {} for {}", src, dst, delta);
+      self.graph_from("").set_edge(src, dst, delta);
 
-      log_verbose!("Add edge in `{}`: {} -> {} for {}", context, src, dst, amount);
-      self.add_edge(context, src, dst, amount);
+      log_verbose!("Set edge in `{}`: {} -> {} for {}", context, src, dst, amount);
+      self.graph_from(context).set_edge(src, dst, amount);
     }
   }
 
@@ -709,7 +752,7 @@ impl AugMultiGraph {
 
       for _ in 0..10000 {
         steps += 1;
-        
+
         status = iteration(&mut open, &mut closed, &mut astar_state, neighbor.clone());
 
         match status.clone() {
@@ -717,7 +760,7 @@ impl AugMultiGraph {
             match graph_cloned.get_node_data(request.node) {
               None       => neighbor = None,
               Some(data) => {
-                let kv : Vec<_> = data.neighbors(Neighbors::Positive).iter().skip(request.index).take(1).collect();
+                let kv : Vec<_> = data.pos_edges.iter().skip(request.index).take(1).collect();
 
                 if kv.is_empty() {
                   neighbor = None;

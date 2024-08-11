@@ -1367,13 +1367,30 @@ fn edge_contexted() {
 fn null_context_is_sum() {
   let mut graph = AugMultiGraph::new();
 
-  graph.write_put_edge("X", "U1", "U2", 1.0);
-  graph.write_put_edge("Y", "U1", "U2", 2.0);
+  graph.write_put_edge("X", "U1", "B2", 1.0);
+  graph.write_put_edge("Y", "U1", "B2", 2.0);
 
   let edges : Vec<(String, String, Weight)> = graph.read_edges("");
 
   let edges_expected : Vec<(String, String, Weight)> = vec![
-    ("U1".to_string(), "U2".to_string(), 3.0)
+    ("U1".to_string(), "B2".to_string(), 3.0)
+  ];
+
+  assert_eq!(edges, edges_expected);
+}
+
+#[test]
+fn null_context_contains_all_users() {
+  let mut graph = AugMultiGraph::new();
+
+  graph.write_put_edge("X", "U1", "U2", 1.0);
+  graph.write_put_edge("Y", "U1", "U3", 2.0);
+
+  let edges : Vec<(String, String, Weight)> = graph.read_edges("");
+
+  let edges_expected : Vec<(String, String, Weight)> = vec![
+    ("U1".to_string(), "U2".to_string(), 1.0),
+    ("U1".to_string(), "U3".to_string(), 2.0),
   ];
 
   assert_eq!(edges, edges_expected);
@@ -1383,14 +1400,14 @@ fn null_context_is_sum() {
 fn delete_contexted_edge() {
   let mut graph = AugMultiGraph::new();
 
-  graph.write_put_edge("X", "U1", "U2", 1.0);
-  graph.write_put_edge("Y", "U1", "U2", 2.0);
-  graph.write_delete_edge("X", "U1", "U2");
+  graph.write_put_edge("X", "U1", "B2", 1.0);
+  graph.write_put_edge("Y", "U1", "B2", 2.0);
+  graph.write_delete_edge("X", "U1", "B2");
 
   let edges : Vec<(String, String, Weight)> = graph.read_edges("");
 
   let edges_expected : Vec<(String, String, Weight)> = vec![
-    ("U1".to_string(), "U2".to_string(), 2.0)
+    ("U1".to_string(), "B2".to_string(), 2.0)
   ];
 
   assert_eq!(edges, edges_expected);
@@ -1400,15 +1417,15 @@ fn delete_contexted_edge() {
 fn null_context_invariant() {
   let mut graph = AugMultiGraph::new();
 
-  graph.write_put_edge("X", "U1", "U2", 1.0);
-  graph.write_put_edge("Y", "U1", "U2", 2.0);
-  graph.write_delete_edge("X", "U1", "U2");
-  graph.write_put_edge("X", "U1", "U2", 1.0);
+  graph.write_put_edge("X", "U1", "B2", 1.0);
+  graph.write_put_edge("Y", "U1", "B2", 2.0);
+  graph.write_delete_edge("X", "U1", "B2");
+  graph.write_put_edge("X", "U1", "B2", 1.0);
 
   let edges : Vec<(String, String, Weight)> = graph.read_edges("");
 
   let edges_expected : Vec<(String, String, Weight)> = vec![
-    ("U1".to_string(), "U2".to_string(), 3.0)
+    ("U1".to_string(), "B2".to_string(), 3.0)
   ];
 
   assert_eq!(edges, edges_expected);
@@ -1490,9 +1507,22 @@ fn scores_contexted() {
 fn scores_unknown_context() {
   let mut graph = AugMultiGraph::new();
 
-  graph.write_put_edge("X", "U1", "U2", 2.0);
-  graph.write_put_edge("X", "U1", "U3", 1.0);
-  graph.write_put_edge("X", "U2", "U3", 3.0);
+  graph.write_put_edge("X", "U1", "B2", 2.0);
+  graph.write_put_edge("X", "U1", "B3", 1.0);
+  graph.write_put_edge("X", "B2", "B3", 3.0);
+
+  let res : Vec<(String, String, Weight)> = graph.read_scores("Y", "U1", "B", false, 10.0, false, 0.0, false, 0, u32::MAX);
+
+  assert_eq!(res.len(), 0);
+}
+
+#[test]
+fn scores_self() {
+  let mut graph = AugMultiGraph::new();
+
+  graph.write_put_edge("X", "U1", "B2", 2.0);
+  graph.write_put_edge("X", "U1", "B3", 1.0);
+  graph.write_put_edge("X", "B2", "B3", 3.0);
 
   let res : Vec<(String, String, Weight)> = graph.read_scores("Y", "U1", "U", false, 10.0, false, 0.0, false, 0, u32::MAX);
 
@@ -1677,6 +1707,23 @@ fn mutual_scores_uncontexted() {
 }
 
 #[test]
+fn mutual_scores_self() {
+  let mut graph = AugMultiGraph::new();
+
+  graph.write_put_edge("", "U1", "U2", 3.0);
+  graph.write_delete_edge("", "U1", "U2");
+
+  let res : Vec<(String, Weight, Weight)> = graph.read_mutual_scores("", "U1");
+
+  assert_eq!(res.len(), 1);
+  assert_eq!(res[0].0, "U1");
+  assert!(res[0].1 > 0.999);
+  assert!(res[0].1 < 1.001);
+  assert!(res[0].2 > 0.999);
+  assert!(res[0].2 < 1.001);
+}
+
+#[test]
 fn mutual_scores_contexted() {
   let mut graph = AugMultiGraph::new();
 
@@ -1698,28 +1745,28 @@ fn mutual_scores_contexted() {
   for x in res.iter() {
     match x.0.as_str() {
       "U1" => {
-        assert!(res[0].1 > 0.3);
-        assert!(res[0].1 < 0.5);
-        assert!(res[0].2 > 0.3);
-        assert!(res[0].2 < 0.45);
+        assert!(x.1 > 0.3);
+        assert!(x.1 < 0.5);
+        assert!(x.2 > 0.3);
+        assert!(x.2 < 0.45);
         assert!(u1);
         u1 = false;
       },
 
       "U2" => {
-        assert!(res[1].1 > 0.25);
-        assert!(res[1].1 < 0.4);
-        assert!(res[1].2 > 0.2);
-        assert!(res[1].2 < 0.35);
+        assert!(x.1 > 0.25);
+        assert!(x.1 < 0.4);
+        assert!(x.2 > 0.2);
+        assert!(x.2 < 0.35);
         assert!(u2);
         u2 = false;
       },
 
       "U3" => {
-        assert!(res[2].1 > 0.2);
-        assert!(res[2].1 < 0.35);
-        assert!(res[2].2 > 0.2);
-        assert!(res[2].2 < 0.35);
+        assert!(x.1 > 0.2);
+        assert!(x.1 < 0.35);
+        assert!(x.2 > 0.2);
+        assert!(x.2 < 0.35);
         assert!(u3);
         u3 = false;
       },
