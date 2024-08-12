@@ -1265,13 +1265,34 @@ fn recalculate_zero_graph_all() {
   graph.write_recalculate_zero();
 
   let res : Vec<(String, String, Weight)> =
-    graph.read_graph("", "Uadeb43da4abb", ZERO_NODE.as_str(), false, 0, 10000);
+    graph.read_graph("", "Uadeb43da4abb", "U000000000000", false, 0, 10000);
 
   let n = res.len();
 
   println!("Got {} edges", n);
   assert!(n > 25);
   assert!(n < 120);
+}
+
+#[test]
+fn recalculate_zero_graph_duplicates() {
+  let mut graph = AugMultiGraph::new();
+
+  put_testing_edges(&mut graph, "");
+
+  graph.write_recalculate_zero();
+
+  let res : Vec<(String, String, Weight)> =
+    graph.read_graph("", "U000000000000", "Ub01f4ad1b03f", false, 0, 10000);
+
+  for (i, x) in res.iter().enumerate() {
+    for (j, y) in res.iter().take(i).enumerate() {
+      if x.0 == y.0 && x.1 == y.1 {
+        println!("Duplicate: [{}, {}] {} -> {}", i, j, x.0, x.1);
+      }
+      assert!(x.0 != y.0 || x.1 != y.1);
+    }
+  }
 }
 
 #[test]
@@ -1283,7 +1304,7 @@ fn recalculate_zero_graph_positive_only() {
   graph.write_recalculate_zero();
 
   let res : Vec<(String, String, Weight)> =
-    graph.read_graph("", "Uadeb43da4abb", ZERO_NODE.as_str(), true, 0, 10000);
+    graph.read_graph("", "Uadeb43da4abb", "U000000000000", true, 0, 10000);
 
   let n = res.len();
 

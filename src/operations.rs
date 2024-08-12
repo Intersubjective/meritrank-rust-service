@@ -895,7 +895,16 @@ impl AugMultiGraph {
               self.node_info_from_id(*dst_id).name.clone()
             );
           } else {
-            edge_ids.push((*src_id, *dst_id, w));
+            let mut found = false;
+            for (x, y, _) in edge_ids.iter() {
+              if *src_id == *x && *dst_id == *y {
+                found = true;
+                break;
+              }
+            }
+            if !found {
+              edge_ids.push((*src_id, *dst_id, w));
+            }
           }
         } else {
           log_error!("(read_graph) Got invalid node index");
@@ -905,13 +914,13 @@ impl AugMultiGraph {
 
     edge_ids
       .into_iter()
+      .skip(index as usize)
+      .take(count as usize)
       .map(|(src_id, dst_id, weight)| {(
         self.node_info_from_id(src_id).name.clone(),
         self.node_info_from_id(dst_id).name.clone(),
         weight
       )})
-      .skip(index as usize)
-      .take(count as usize)
       .collect()
   }
 
