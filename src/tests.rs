@@ -1818,15 +1818,15 @@ fn graph_uncontexted() {
     match x.0.as_str() {
       "U1" => {
         assert_eq!(x.1, "U2");
-        assert!(x.2 > 1.8);
-        assert!(x.2 < 2.2);
+        assert!(x.2 > 0.65);
+        assert!(x.2 < 0.67);
         has_u1 = true;
       },
 
       "U2" => {
         assert_eq!(x.1, "U3");
-        assert!(x.2 > 2.8);
-        assert!(x.2 < 3.2);
+        assert!(x.2 > 0.99);
+        assert!(x.2 < 1.01);
         has_u2 = true;
       },
 
@@ -1857,15 +1857,15 @@ fn graph_contexted() {
     match x.0.as_str() {
       "U1" => {
         assert_eq!(x.1, "U2");
-        assert!(x.2 > 1.8);
-        assert!(x.2 < 2.2);
+        assert!(x.2 > 0.65);
+        assert!(x.2 < 0.67);
         has_u1 = true;
       },
 
       "U2" => {
         assert_eq!(x.1, "U3");
-        assert!(x.2 > 2.8);
-        assert!(x.2 < 3.2);
+        assert!(x.2 > 0.99);
+        assert!(x.2 < 1.01);
         has_u2 = true;
       },
 

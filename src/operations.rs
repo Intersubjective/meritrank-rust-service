@@ -223,7 +223,22 @@ impl AugMultiGraph {
     *self.graph_from(context).graph.edge_weight(src, dst).unwrap_or(None).unwrap_or(&0.0)
   }
 
+  pub fn edge_weight_normalized(&mut self, context : &str, src : NodeId, dst : NodeId) -> Weight {
+    log_trace!("edge_weight_normalized: `{}` {} {}", context, src, dst);
+
+    let graph = self.graph_from(context);
+
+    let pos_sum = match graph.graph.get_node_data(src) {
+      Some(x) => if x.pos_sum < EPSILON { 1.0 } else { x.pos_sum },
+      None    => 1.0
+    };
+
+    graph.graph.edge_weight(src, dst).unwrap_or(None).unwrap_or(&0.0) / pos_sum
+  }
+
   pub fn all_neighbors(&mut self, context : &str, node : NodeId) -> Vec<(NodeId, Weight)> {
+    log_trace!("all_neighbors: `{}` {}", context, node);
+
     let mut v = vec![];
 
     match self.graph_from(context).graph.get_node_data(node) {
@@ -240,6 +255,37 @@ impl AugMultiGraph {
 
         for x in &data.neg_edges {
           v.push((*x.0, *x.1));
+        }
+      }
+    }
+
+    v
+  }
+
+  pub fn all_neighbors_normalized(&mut self, context : &str, node : NodeId) -> Vec<(NodeId, Weight)> {
+    log_trace!("all_neighbors_normalized: `{}` {}", context, node);
+
+    let mut v = vec![];
+
+    match self.graph_from(context).graph.get_node_data(node) {
+      None => {},
+      Some(data) => {
+        v.reserve_exact(
+          data.pos_edges.len() +
+          data.neg_edges.len()
+        );
+
+        let pos_sum = if data.pos_sum > EPSILON {
+          log_error!("Unable to normalize node weight, positive sum is zero.");
+          data.pos_sum
+        } else { 1.0 };
+
+        for x in &data.pos_edges {
+          v.push((*x.0, *x.1 / pos_sum));
+        }
+
+        for x in &data.neg_edges {
+          v.push((*x.0, *x.1 / pos_sum));
         }
       }
     }
@@ -678,13 +724,13 @@ impl AugMultiGraph {
 
     log_trace!("enumerate focus neighbors");
 
-    let focus_neighbors = self.all_neighbors(context, focus_id);
+    let focus_neighbors = self.all_neighbors_normalized(context, focus_id);
 
     for (dst_id, focus_dst_weight) in focus_neighbors {
       let dst_kind = self.node_info_from_id(dst_id).kind;
 
       if dst_kind == NodeKind::User {
-        if positive_only && self.edge_weight(context, ego_id, dst_id) <= 0.0 {
+        if positive_only && self.get_score_or_recalculate(context, ego_id, dst_id) <= 0.0 {
           continue;
         }
 
@@ -700,7 +746,7 @@ impl AugMultiGraph {
           log_error!("(read_graph) Got invalid node id");
         }
       } else if dst_kind == NodeKind::Comment || dst_kind == NodeKind::Beacon {
-        let dst_neighbors = self.all_neighbors(context, dst_id);
+        let dst_neighbors = self.all_neighbors_normalized(context, dst_id);
 
         for (ngh_id, dst_ngh_weight) in dst_neighbors {
           if (positive_only && dst_ngh_weight <= 0.0) || ngh_id == focus_id || self.node_info_from_id(ngh_id).kind != NodeKind::User {
@@ -765,8 +811,12 @@ impl AugMultiGraph {
                 if kv.is_empty() {
                   neighbor = None;
                 } else {
-                  let n = kv[0].0;
-                  let w = kv[0].1;
+                  let     n = kv[0].0;
+                  let mut w = *kv[0].1;
+
+                  if data.pos_sum > EPSILON {
+                    w /= data.pos_sum;
+                  }
 
                   neighbor = Some(Link::<NodeId, Weight> {
                     neighbor       : *n,
@@ -820,7 +870,7 @@ impl AugMultiGraph {
         let a_kind = self.node_info_from_id(a).kind;
         let b_kind = self.node_info_from_id(b).kind;
 
-        let a_b_weight = self.edge_weight(context, a, b);
+        let a_b_weight = self.edge_weight_normalized(context, a, b);
 
         if k + 2 == ego_to_focus.len() {
           if a_kind == NodeKind::User {
@@ -831,7 +881,7 @@ impl AugMultiGraph {
         } else if b_kind != NodeKind::User {
           log_trace!("ignore node {}", self.node_info_from_id(b).name);
           let c = ego_to_focus[k + 2];
-          let b_c_weight = self.edge_weight(context, b, c);
+          let b_c_weight = self.edge_weight_normalized(context, b, c);
           let a_c_weight = a_b_weight * b_c_weight * if a_b_weight < 0.0 && b_c_weight < 0.0 { -1.0 } else { 1.0 };
           edges.push((a, c, a_c_weight));
         } else if a_kind == NodeKind::User {
@@ -911,6 +961,8 @@ impl AugMultiGraph {
         }
       }
     }
+
+    edge_ids.sort_by(|(_, _, a), (_, _, b)| a.total_cmp(b));
 
     edge_ids
       .into_iter()
