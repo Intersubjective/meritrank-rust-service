@@ -35,6 +35,7 @@ pub struct Data {
   pub graph_readable : Arc<Mutex<AugMultiGraph>>,
   pub graph_writable : Arc<Mutex<AugMultiGraph>>,
   pub queue_commands : Arc<Mutex<Vec<Command>>>,
+  pub write_sync     : Arc<Mutex<()>>,
   pub cond_add       : Arc<Condvar>,
   pub cond_done      : Arc<Condvar>,
 }
@@ -103,10 +104,14 @@ fn perform_command(
   } else if command.id == CMD_SYNC {
     if let Ok(()) = rmp_serde::from_slice(command.payload.as_slice()) {
       let mut queue = data.queue_commands.lock().expect("Mutex lock failed");
+
       while !queue.is_empty() {
         log_trace!("wait for queue to be empty");
         queue = data.cond_done.wait(queue).expect("Condvar wait failed");
       }
+
+      let _write = data.write_sync.lock().expect("Mutex lock failed");
+
       return encode_response(&());
     }
   } else if command.id == CMD_VERSION {
@@ -176,9 +181,11 @@ fn perform_command(
 
 fn command_queue_thread(data : Data) {
   let mut queue = data.queue_commands.lock().expect("Mutex lock failed");
-  log_trace!("command_queue_thread");
-
   loop {
+    log_trace!("command_queue_thread (loop)");
+
+    let write = data.write_sync.lock().expect("Mutex lock failed");
+
     let commands : Vec<_> = queue.clone();
     queue.clear();
     std::mem::drop(queue);
@@ -187,10 +194,15 @@ fn command_queue_thread(data : Data) {
       let _ = perform_command(&data, cmd.clone());
     }
 
+    std::mem::drop(write);
+
     queue = data.queue_commands.lock().expect("Mutex lock failed");
-    log_trace!("notify done");
-    data.cond_done.notify_all();
-    queue = data.cond_add.wait(queue).expect("Condvar wait failed");
+    if queue.is_empty() {
+      log_trace!("notify done");
+      data.cond_done.notify_all();
+
+      queue = data.cond_add.wait(queue).expect("Condvar wait failed");
+    }
   }
 }
 
@@ -298,6 +310,7 @@ pub fn main_async(threads : usize) -> Result<(), ()> {
     graph_readable : Arc::<Mutex<AugMultiGraph>>::new(Mutex::<AugMultiGraph>::new(AugMultiGraph::new())),
     graph_writable : Arc::<Mutex<AugMultiGraph>>::new(Mutex::<AugMultiGraph>::new(AugMultiGraph::new())),
     queue_commands : Arc::<Mutex<Vec<Command>>>::new(Mutex::<Vec<Command>>::new(vec![])),
+    write_sync     : Arc::<Mutex<()>>::new(Mutex::<()>::new(())),
     cond_add       : Arc::<Condvar>::new(Condvar::new()),
     cond_done      : Arc::<Condvar>::new(Condvar::new()),
   };
