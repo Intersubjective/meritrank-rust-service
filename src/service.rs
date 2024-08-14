@@ -50,7 +50,8 @@ fn perform_command(
      command.id == CMD_RECALCULATE_ZERO ||
      command.id == CMD_DELETE_EDGE      ||
      command.id == CMD_DELETE_NODE      ||
-     command.id == CMD_PUT_EDGE
+     command.id == CMD_PUT_EDGE         ||
+     command.id == CMD_CREATE_CONTEXT
   {
     //  Write commands
 
@@ -86,6 +87,11 @@ fn perform_command(
       CMD_PUT_EDGE => {
         if let Ok((src, dst, amount)) = rmp_serde::from_slice(command.payload.as_slice()) {
           graph.write_put_edge(command.context.as_str(), src, dst, amount);
+        }
+      },
+      CMD_CREATE_CONTEXT => {
+        if let Ok(()) = rmp_serde::from_slice(command.payload.as_slice()) {
+          graph.write_create_context(command.context.as_str());
         }
       },
       _ => {},

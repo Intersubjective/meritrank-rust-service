@@ -24,7 +24,8 @@ pub const CMD_DELETE_NODE      : &str = "delete_node";
 pub const CMD_GRAPH            : &str = "graph";
 pub const CMD_CONNECTED        : &str = "connected";
 pub const CMD_EDGES            : &str = "edges";
-pub const CMD_MUTUAL_SCORES    : &str = "mutual_scores"; 
+pub const CMD_MUTUAL_SCORES    : &str = "mutual_scores";
+pub const CMD_CREATE_CONTEXT   : &str = "create_context";
 
 #[derive(Clone)]
 pub struct Command {

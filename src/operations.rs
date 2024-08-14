@@ -636,6 +636,11 @@ impl AugMultiGraph {
     page
   }
 
+  pub fn write_create_context(&mut self, context : &str) {
+    log_info!("CMD write_create_context: `{}`", context);
+    self.create_context(context);
+  }
+
   pub fn write_put_edge(
     &mut self,
     context : &str,
