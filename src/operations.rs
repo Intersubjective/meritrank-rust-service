@@ -160,11 +160,7 @@ impl AugMultiGraph {
   pub fn create_context(&mut self, context : &str) {
     log_trace!("create_context: `{}`", context);
 
-    if context.is_empty() {
-      log_verbose!("Add context: NULL");
-    } else {
-      log_verbose!("Add context: `{}`", context);
-    }
+    log_verbose!("Add context: `{}`", context);
 
     let mut graph = MeritRank::new(Graph::new());
 
@@ -175,7 +171,7 @@ impl AugMultiGraph {
     if !context.is_empty() {
       match self.contexts.get_mut("") {
         Some(zero) => {
-          log_verbose!("Copy user edges from NULL into `{}`", context);
+          log_verbose!("Copy user edges from `` into `{}`", context);
 
           let zero_cloned = zero.clone();
           let all_nodes   = zero_cloned.graph.nodes.iter().enumerate();
@@ -229,8 +225,14 @@ impl AugMultiGraph {
     let graph = self.graph_from(context);
 
     let pos_sum = match graph.graph.get_node_data(src) {
-      Some(x) => if x.pos_sum < EPSILON { 1.0 } else { x.pos_sum },
-      None    => 1.0
+      Some(x) => if x.pos_sum < EPSILON {
+        log_warning!("Unable to normalize node weight, positive sum is zero.");
+        1.0
+      } else {
+        x.pos_sum
+      },
+
+      None => 1.0
     };
 
     graph.graph.edge_weight(src, dst).unwrap_or(None).unwrap_or(&0.0) / pos_sum
@@ -276,9 +278,11 @@ impl AugMultiGraph {
         );
 
         let pos_sum = if data.pos_sum > EPSILON {
-          log_error!("Unable to normalize node weight, positive sum is zero.");
           data.pos_sum
-        } else { 1.0 };
+        } else {
+          log_warning!("Unable to normalize node weight, positive sum is zero.");
+          1.0
+        };
 
         for x in &data.pos_edges {
           v.push((*x.0, *x.1 / pos_sum));
@@ -391,11 +395,7 @@ impl AugMultiGraph {
         continue;
       }
 
-      if !context.is_empty() {
-        log_verbose!("Add node in NULL: {}", node_id);
-      } else {
-        log_verbose!("Add node in `{}`: {}", context, node_id);
-      }
+      log_verbose!("Add node in `{}`: {}", context, node_id);
 
       //  HACK!!!
       while graph.get_new_nodeid() < node_id {}
@@ -423,22 +423,18 @@ impl AugMultiGraph {
       }
 
       for (enum_context, graph) in &mut self.contexts {
-        if enum_context.is_empty() {
-          log_verbose!("Set user edge in NULL: {} -> {} for {}", src, dst, amount);
-        } else {
-          log_verbose!("Set user edge in `{}`: {} -> {} for {}", enum_context, src, dst, amount);
-        }
+        log_verbose!("Set user edge in `{}`: {} -> {} for {}", enum_context, src, dst, amount);
         graph.set_edge(src, dst, amount);
       }
     } else if context.is_empty() {
-      log_verbose!("Set edge in NULL: {} -> {} for {}", src, dst, amount);
+      log_verbose!("Set edge in ``: {} -> {} for {}", src, dst, amount);
       self.graph_from(context).set_edge(src, dst, amount);
     } else {
       let null_weight = self.edge_weight("",      src, dst);
       let old_weight  = self.edge_weight(context, src, dst);
       let delta       = null_weight + amount - old_weight;
 
-      log_verbose!("Set edge in NULL: {} -> {} for {}", src, dst, delta);
+      log_verbose!("Set edge in ``: {} -> {} for {}", src, dst, delta);
       self.graph_from("").set_edge(src, dst, delta);
 
       log_verbose!("Set edge in `{}`: {} -> {} for {}", context, src, dst, amount);

@@ -198,6 +198,7 @@ fn command_queue_thread(data : Data) {
 
     for cmd in commands {
       let _ = perform_command(&data, cmd.clone());
+      log_trace!("perform_command - done");
     }
 
     std::mem::drop(write);
@@ -253,7 +254,9 @@ fn decode_and_handle_request(
     put_for_write(&data, command);
     encode_response(&())
   } else {
-    perform_command(&data, command)
+    let res = perform_command(&data, command);
+    log_trace!("perform_command - done");
+    res
   }
 }
 
@@ -286,6 +289,7 @@ fn worker_callback(
           },
         },
       };
+      log_trace!("decode_and_handle_request - done");
       match ctx.send(&aio, msg.as_slice()) {
         Ok(_) => {},
         Err(error) => {

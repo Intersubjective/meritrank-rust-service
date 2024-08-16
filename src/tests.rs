@@ -1,5 +1,6 @@
 use crate::operations::*;
 use crate::protocol::*;
+use std::time::SystemTime;
 
 fn put_testing_edges(graph : &mut AugMultiGraph, context : &str) {
   graph.write_put_edge(context, "U0cd6bd2dde4f", "B7f628ad203b5",  1.0);
@@ -1334,6 +1335,27 @@ fn recalculate_zero_graph_focus_beacon() {
 
   assert!(n >= 2);
   assert!(n < 80);
+}
+
+#[test]
+fn recalculate_zero_reset_perf() {
+  let mut graph = AugMultiGraph::new();
+
+  put_testing_edges(&mut graph, "");
+  graph.write_recalculate_zero();
+  graph.reset();
+  put_testing_edges(&mut graph, "");
+  graph.create_context("X");
+  graph.create_context("Y");
+  graph.create_context("Z");
+  graph.write_recalculate_zero();
+
+  let begin    = SystemTime::now();
+  let get_time = || SystemTime::now().duration_since(begin).unwrap().as_millis();
+
+  graph.read_graph("", "Uadeb43da4abb", "U000000000000", true, 0, 10000);
+
+  assert!(get_time() < 10);
 }
 
 #[test]
