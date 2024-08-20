@@ -87,7 +87,8 @@ pub struct AugMultiGraph {
 //
 //  ================================================================
 
-use std::hash::{DefaultHasher, Hasher};
+use std::hash::Hasher;
+use std::collections::hash_map::DefaultHasher;
 
 pub const BLOOM_FILTER_SIZE     : usize = 16;
 pub const BLOOM_FILTER_NUM_BITS : usize = 8;
