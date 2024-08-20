@@ -64,8 +64,9 @@ pub enum NodeKind {
 
 #[derive(PartialEq, Eq, Clone, Default)]
 pub struct NodeInfo {
-  pub kind : NodeKind,
-  pub name : String,
+  pub kind  : NodeKind,
+  pub name  : String,
+  pub marks : [u64; BLOOM_FILTER_SIZE],
 }
 
 //  Augmented multi-context graph
@@ -82,11 +83,70 @@ pub struct AugMultiGraph {
 
 //  ================================================================
 //
+//    Bloom filter
+//
+//  ================================================================
+
+use std::hash::{DefaultHasher, Hasher};
+
+pub const BLOOM_FILTER_SIZE     : usize = 16;
+pub const BLOOM_FILTER_NUM_BITS : usize = 8;
+
+pub fn bloom_filter_bits(
+  context : &str,
+  name    : &str
+) -> [u64; BLOOM_FILTER_SIZE] {
+  let mut v : [u64; BLOOM_FILTER_SIZE] = Default::default();
+
+  for n in 1..=BLOOM_FILTER_NUM_BITS {
+    let mut h0 = DefaultHasher::new();
+    h0.write(context.as_bytes());
+    let context_hash = h0.finish();
+
+    let mut h = DefaultHasher::new();
+    h.write_u16(n as u16);
+    h.write_u64(context_hash);
+    h.write(name.as_bytes());
+    let hash = h.finish();
+
+    let u64_index = ((hash / 64u64) as usize) % BLOOM_FILTER_SIZE;
+    let bit_index =   hash % 64u64;
+
+    v[u64_index] |= 1u64 << bit_index;
+  }
+
+  v
+}
+
+pub fn bloom_filter_add(
+  mask : &mut [u64; BLOOM_FILTER_SIZE],
+  bits : &[u64; BLOOM_FILTER_SIZE]
+) {
+  for i in 0..BLOOM_FILTER_SIZE {
+    mask[i] |= bits[i];
+  }
+}
+
+pub fn bloom_filter_contains(
+  mask : &mut [u64; BLOOM_FILTER_SIZE],
+  bits : &[u64; BLOOM_FILTER_SIZE]
+) -> bool {
+  for i in 0..BLOOM_FILTER_SIZE {
+    if (mask[i] & bits[i]) != bits[i] {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+//  ================================================================
+//
 //    Utils
 //
 //  ================================================================
 
-fn kind_from_name(name : &str) -> NodeKind {
+pub fn kind_from_name(name : &str) -> NodeKind {
   log_trace!("kind_from_name: `{}`", name);
 
   match name.chars().nth(0) {
@@ -111,8 +171,9 @@ impl AugMultiGraph {
       node_count  : 0,
       node_infos  : Vec::new(),
       dummy_info  : NodeInfo {
-        kind : NodeKind::Unknown,
-        name : "".to_string(),
+        kind  : NodeKind::Unknown,
+        name  : "".to_string(),
+        marks : Default::default(),
       },
       dummy_graph : MeritRank::new(Graph::new()),
       node_ids    : HashMap::new(),
@@ -149,8 +210,9 @@ impl AugMultiGraph {
       _       => {
         log_error!("(node_info_from_id) Node does not exist: `{}`", node_id);
         self.dummy_info = NodeInfo {
-          kind : NodeKind::Unknown,
-          name : "".to_string(),
+          kind  : NodeKind::Unknown,
+          name  : "".to_string(),
+          marks : Default::default(),
         };
         &self.dummy_info
       },
@@ -183,9 +245,7 @@ impl AugMultiGraph {
                 .chain( src.neg_edges.iter() );
 
               for (dst_id, weight) in all_edges {
-                if self.node_info_from_id(*dst_id).kind == NodeKind::User {
-                  graph.set_edge(src_id, *dst_id, *weight);
-                }
+                graph.set_edge(src_id, *dst_id, *weight);
               }
             }
           }
@@ -277,11 +337,11 @@ impl AugMultiGraph {
           data.neg_edges.len()
         );
 
-        let pos_sum = if data.pos_sum > EPSILON {
-          data.pos_sum
-        } else {
+        let pos_sum = if data.pos_sum < EPSILON {
           log_warning!("Unable to normalize node weight, positive sum is zero.");
           1.0
+        } else {
+          data.pos_sum
         };
 
         for x in &data.pos_edges {
@@ -384,8 +444,9 @@ impl AugMultiGraph {
       self.node_count += 1;
       self.node_infos.resize(self.node_count, NodeInfo::default());
       self.node_infos[node_id] = NodeInfo {
-        kind : kind_from_name(&node_name),
-        name : node_name.to_string(),
+        kind  : kind_from_name(&node_name),
+        name  : node_name.to_string(),
+        marks : Default::default(),
       };
       self.node_ids.insert(node_name.to_string(), node_id);
     }
@@ -413,8 +474,7 @@ impl AugMultiGraph {
   ) {
     log_trace!("set_edge: `{}` `{}` `{}` {}", context, src, dst, amount);
 
-    if self.node_info_from_id(src).kind == NodeKind::User &&
-       self.node_info_from_id(dst).kind == NodeKind::User {
+    if self.node_info_from_id(src).kind == NodeKind::User {
       //  Create context if does not exist
 
       self.graph_from("");
@@ -440,47 +500,6 @@ impl AugMultiGraph {
       log_verbose!("Set edge in `{}`: {} -> {} for {}", context, src, dst, amount);
       self.graph_from(context).set_edge(src, dst, amount);
     }
-  }
-
-  pub fn connected_nodes(
-    &mut self,
-    context   : &str,
-    ego       : NodeId
-  ) -> Vec<(NodeId, NodeId)> {
-    log_trace!("connected_nodes: `{}` {}", context, ego);
-
-    self.all_neighbors(context, ego)
-      .into_iter()
-      .map(|(dst_id, _)| (ego, dst_id))
-        .collect()
-  }
-
-  pub fn connected_node_names(
-    &mut self,
-    context   : &str,
-    ego       : &str
-  ) -> Vec<(String, String)> {
-    log_trace!("connected_node_names: `{}` `{}`", context, ego);
-
-    if !self.node_exists(ego) {
-      log_error!("(connected_node_names) Node does not exist: `{}`", ego);
-      return vec![];
-    }
-
-    let src_id   = self.find_or_add_node_by_name(ego);
-    let edge_ids = self.connected_nodes(context, src_id);
-
-    let mut v = vec![];
-    v.reserve_exact(edge_ids.len());
-
-    for x in edge_ids {
-      v.push((
-        self.node_info_from_id(x.0).name.clone(),
-        self.node_info_from_id(x.1).name.clone()
-      ));
-    }
-
-    v
   }
 
   pub fn recalculate_all(&mut self, num_walk : usize) {
@@ -534,6 +553,11 @@ impl AugMultiGraph {
   ) -> Vec<(String, String, f64)> {
     log_info!("CMD read_node_score: `{}` `{}` `{}`", context, ego, target);
 
+    if !self.contexts.contains_key(context) {
+      log_error!("(read_node_score) Context does not exist: `{}`", context);
+      return [(ego.to_string(), target.to_string(), 0.0)].to_vec();
+    }
+
     if !self.node_exists(ego) {
       log_error!("(read_node_score) Node does not exist: `{}`", ego);
       return [(ego.to_string(), target.to_string(), 0.0)].to_vec();
@@ -580,6 +604,11 @@ impl AugMultiGraph {
       },
     };
 
+    if !self.contexts.contains_key(context) {
+      log_error!("(read_scores) Context does not exist: `{}`", context);
+      return vec![];
+    }
+
     if !self.node_exists(ego) {
       log_error!("(read_scores) Node does not exist: `{}`", ego);
       return vec![];
@@ -614,7 +643,7 @@ impl AugMultiGraph {
         .map(|(target_id, _, weight)| (target_id, weight))
         .collect();
 
-    im.sort_by(|(_, a), (_, b)| a.total_cmp(b));
+    im.sort_by(|(_, a), (_, b)| b.abs().total_cmp(&a.abs()));
 
     let index = index as usize;
     let count = count as usize;
@@ -699,6 +728,11 @@ impl AugMultiGraph {
   ) -> Vec<(String, String, Weight)> {
     log_info!("CMD read_graph: `{}` `{}` `{}` {} {} {}",
               context, ego, focus, positive_only, index, count);
+
+    if !self.contexts.contains_key(context) {
+      log_error!("(read_graph) Context does not exist: `{}`", context);
+      return vec![];
+    }
 
     if !self.node_exists(ego) {
       log_error!("(read_graph) Node does not exist: `{}`", ego);
@@ -963,7 +997,7 @@ impl AugMultiGraph {
       }
     }
 
-    edge_ids.sort_by(|(_, _, a), (_, _, b)| a.total_cmp(b));
+    edge_ids.sort_by(|(_, _, a), (_, _, b)| b.abs().total_cmp(&a.abs()));
 
     edge_ids
       .into_iter()
@@ -983,7 +1017,29 @@ impl AugMultiGraph {
     ego       : &str
   ) -> Vec<(String, String)> {
     log_info!("CMD read_connected: `{}` `{}`", context, ego);
-    self.connected_node_names(context, ego)
+
+    if !self.contexts.contains_key(context) {
+      log_error!("(read_connected) Context does not exist: `{}`", context);
+      return vec![];
+    }
+
+    if !self.node_exists(ego) {
+      log_error!("(read_connected) Node does not exist: `{}`", ego);
+      return vec![];
+    }
+
+    let src_id = self.find_or_add_node_by_name(ego);
+
+    let mut v = vec![];
+
+    for (dst_id, _) in self.all_neighbors(context, src_id) {
+      v.push((
+        ego.to_string(),
+        self.node_info_from_id(dst_id).name.clone()
+      ));
+    }
+
+    v
   }
 
   pub fn read_node_list(&self) -> Vec<(String,)> {
@@ -997,6 +1053,11 @@ impl AugMultiGraph {
 
   pub fn read_edges(&mut self, context : &str) -> Vec<(String, String, Weight)> {
     log_info!("CMD read_edges: `{}`", context);
+
+    if !self.contexts.contains_key(context) {
+      log_error!("(read_edges) Context does not exist: `{}`", context);
+      return vec![];
+    }
 
     let infos = self.node_infos.clone();
 
@@ -1023,6 +1084,11 @@ impl AugMultiGraph {
     ego       : &str
   ) -> Vec<(String, Weight, Weight)> {
     log_info!("CMD read_mutual_scores: `{}` `{}`", context, ego);
+
+    if !self.contexts.contains_key(context) {
+      log_error!("(read_mutual_scores) Context does not exist: `{}`", context);
+      return vec![];
+    }
 
     if !self.node_exists(ego) {
       log_error!("(read_mutual_scores) Node does not exist: `{}`", ego);
@@ -1053,6 +1119,72 @@ impl AugMultiGraph {
   pub fn write_reset(&mut self) {
     log_info!("CMD write_reset");
     self.reset();
+  }
+
+  pub fn write_mark_beacons(
+    &mut self,
+    context   : &str,
+    src       : &str
+  ) {
+    log_info!("CMD write_mark_beacons: `{}` `{}`", context, src);
+
+    let src_id = self.find_or_add_node_by_name(src);
+    let mark   = bloom_filter_bits(context, src);
+
+    for beacon_id in 0..self.node_count {
+      if self.node_infos[beacon_id].kind != NodeKind::Beacon {
+        continue;
+      }
+
+      if self.get_score_or_recalculate(context, src_id, beacon_id) < EPSILON {
+        continue;
+      }
+
+      bloom_filter_add(&mut self.node_infos[beacon_id].marks, &mark);
+    }
+  }
+
+  pub fn read_unmarked_beacons(
+    &mut self,
+    context   : &str,
+    src       : &str
+  ) -> Vec<(String, Weight)> {
+    log_info!("CMD read_unmarked_beacons: `{}` `{}`", context, src);
+
+    if !self.contexts.contains_key(context) {
+      log_error!("(read_unmarked_beacons) Context does not exist: `{}`", context);
+      return vec![];
+    }
+
+    if !self.node_exists(src) {
+      log_error!("(read_unmarked_beacons) Node does not exist: `{}`", src);
+      return vec![];
+    }
+
+    let src_id = self.find_or_add_node_by_name(src);
+    let mark   = bloom_filter_bits(context, src);
+
+    let mut v = vec![];
+
+    for beacon_id in 0..self.node_count {
+      if self.node_infos[beacon_id].kind != NodeKind::Beacon {
+        continue;
+      }
+
+      let score = self.get_score_or_recalculate(context, src_id, beacon_id);
+
+      if score < EPSILON {
+        continue;
+      }
+
+      if !bloom_filter_contains(&mut self.node_infos[beacon_id].marks, &mark) {
+        v.push((self.node_infos[beacon_id].name.clone(), score));
+      }
+    }
+
+    v.sort_by(|(_, a), (_, b)| b.total_cmp(a));
+
+    v
   }
 }
 
@@ -1136,10 +1268,9 @@ impl AugMultiGraph {
     log_trace!("delete_from_zero");
 
     let src_id = self.find_or_add_node_by_name(ZERO_NODE.as_str());
-    let edges  = self.connected_nodes("", src_id);
 
-    for (src, dst) in edges {
-      self.set_edge("", src, dst, 0.0);
+    for (dst_id, _) in self.all_neighbors("", src_id) {
+      self.set_edge("", src_id, dst_id, 0.0);
     }
   }
 

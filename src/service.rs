@@ -51,7 +51,8 @@ fn perform_command(
      command.id == CMD_DELETE_EDGE      ||
      command.id == CMD_DELETE_NODE      ||
      command.id == CMD_PUT_EDGE         ||
-     command.id == CMD_CREATE_CONTEXT
+     command.id == CMD_CREATE_CONTEXT   ||
+     command.id == CMD_MARK_BEACONS
   {
     //  Write commands
 
@@ -92,6 +93,11 @@ fn perform_command(
       CMD_CREATE_CONTEXT => {
         if let Ok(()) = rmp_serde::from_slice(command.payload.as_slice()) {
           graph.write_create_context(command.context.as_str());
+        }
+      },
+      CMD_MARK_BEACONS => {
+        if let Ok(src) = rmp_serde::from_slice(command.payload.as_slice()) {
+          graph.write_mark_beacons(command.context.as_str(), src);
         }
       },
       _ => {},
@@ -172,6 +178,11 @@ fn perform_command(
       CMD_MUTUAL_SCORES => {
         if let Ok(ego) = rmp_serde::from_slice(command.payload.as_slice()) {
           return encode_response(&graph.read_mutual_scores(command.context.as_str(), ego));
+        }
+      },
+      CMD_UNMARKED_BEACONS => {
+        if let Ok(src) = rmp_serde::from_slice(command.payload.as_slice()) {
+          return encode_response(&graph.read_unmarked_beacons(command.context.as_str(), src));
         }
       },
       _ => {

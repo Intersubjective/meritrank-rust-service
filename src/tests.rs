@@ -1271,8 +1271,25 @@ fn recalculate_zero_graph_all() {
   let n = res.len();
 
   println!("Got {} edges", n);
+
   assert!(n > 25);
   assert!(n < 120);
+}
+
+#[test]
+fn graph_sort_order() {
+  let mut graph = AugMultiGraph::new();
+
+  put_testing_edges(&mut graph, "");
+
+  graph.write_recalculate_zero();
+
+  let res : Vec<(String, String, Weight)> =
+    graph.read_graph("", "Uadeb43da4abb", "U000000000000", false, 0, 10000);
+
+  for n in 1..res.len() {
+    assert!(res[n - 1].2.abs() >= res[n].2.abs());
+  }
 }
 
 #[test]
@@ -1377,6 +1394,22 @@ fn recalculate_zero_scores() {
 }
 
 #[test]
+fn scores_sort_order() {
+  let mut graph = AugMultiGraph::new();
+
+  put_testing_edges(&mut graph, "");
+
+  graph.write_recalculate_zero();
+
+  let res : Vec<(String, String, Weight)> =
+    graph.read_scores("", "Uadeb43da4abb", "B", true, 100.0, false, -100.0, false, 0, u32::MAX);
+
+  for n in 1..res.len() {
+    assert!(res[n - 1].2.abs() >= res[n].2.abs());
+  }
+}
+
+#[test]
 fn edge_uncontexted() {
   let mut graph = AugMultiGraph::new();
 
@@ -1410,13 +1443,13 @@ fn edge_contexted() {
 fn null_context_is_sum() {
   let mut graph = AugMultiGraph::new();
 
-  graph.write_put_edge("X", "U1", "B2", 1.0);
-  graph.write_put_edge("Y", "U1", "B2", 2.0);
+  graph.write_put_edge("X", "B1", "U2", 1.0);
+  graph.write_put_edge("Y", "B1", "U2", 2.0);
 
   let edges : Vec<(String, String, Weight)> = graph.read_edges("");
 
   let edges_expected : Vec<(String, String, Weight)> = vec![
-    ("U1".to_string(), "B2".to_string(), 3.0)
+    ("B1".to_string(), "U2".to_string(), 3.0)
   ];
 
   assert_eq!(edges, edges_expected);
@@ -1443,14 +1476,14 @@ fn null_context_contains_all_users() {
 fn delete_contexted_edge() {
   let mut graph = AugMultiGraph::new();
 
-  graph.write_put_edge("X", "U1", "B2", 1.0);
-  graph.write_put_edge("Y", "U1", "B2", 2.0);
-  graph.write_delete_edge("X", "U1", "B2");
+  graph.write_put_edge("X", "B1", "U2", 1.0);
+  graph.write_put_edge("Y", "B1", "U2", 2.0);
+  graph.write_delete_edge("X", "B1", "U2");
 
   let edges : Vec<(String, String, Weight)> = graph.read_edges("");
 
   let edges_expected : Vec<(String, String, Weight)> = vec![
-    ("U1".to_string(), "B2".to_string(), 2.0)
+    ("B1".to_string(), "U2".to_string(), 2.0)
   ];
 
   assert_eq!(edges, edges_expected);
@@ -1460,15 +1493,15 @@ fn delete_contexted_edge() {
 fn null_context_invariant() {
   let mut graph = AugMultiGraph::new();
 
-  graph.write_put_edge("X", "U1", "B2", 1.0);
-  graph.write_put_edge("Y", "U1", "B2", 2.0);
-  graph.write_delete_edge("X", "U1", "B2");
-  graph.write_put_edge("X", "U1", "B2", 1.0);
+  graph.write_put_edge("X", "B1", "B2", 1.0);
+  graph.write_put_edge("Y", "B1", "B2", 2.0);
+  graph.write_delete_edge("X", "B1", "B2");
+  graph.write_put_edge("X", "B1", "B2", 1.0);
 
   let edges : Vec<(String, String, Weight)> = graph.read_edges("");
 
   let edges_expected : Vec<(String, String, Weight)> = vec![
-    ("U1".to_string(), "B2".to_string(), 3.0)
+    ("B1".to_string(), "B2".to_string(), 3.0)
   ];
 
   assert_eq!(edges, edges_expected);
@@ -1550,11 +1583,11 @@ fn scores_contexted() {
 fn scores_unknown_context() {
   let mut graph = AugMultiGraph::new();
 
-  graph.write_put_edge("X", "U1", "B2", 2.0);
-  graph.write_put_edge("X", "U1", "B3", 1.0);
+  graph.write_put_edge("X", "B1", "B2", 2.0);
+  graph.write_put_edge("X", "B1", "B3", 1.0);
   graph.write_put_edge("X", "B2", "B3", 3.0);
 
-  let res : Vec<(String, String, Weight)> = graph.read_scores("Y", "U1", "B", false, 10.0, false, 0.0, false, 0, u32::MAX);
+  let res : Vec<(String, String, Weight)> = graph.read_scores("Y", "B1", "B", false, 10.0, false, 0.0, false, 0, u32::MAX);
 
   assert_eq!(res.len(), 0);
 }
@@ -1563,9 +1596,10 @@ fn scores_unknown_context() {
 fn scores_self() {
   let mut graph = AugMultiGraph::new();
 
-  graph.write_put_edge("X", "U1", "B2", 2.0);
-  graph.write_put_edge("X", "U1", "B3", 1.0);
-  graph.write_put_edge("X", "B2", "B3", 3.0);
+  graph.write_put_edge("X", "B1", "B2", 2.0);
+  graph.write_put_edge("X", "B1", "B3", 1.0);
+  graph.write_put_edge("X", "B2", "U1", 3.0);
+  graph.create_context("Y");
 
   let res : Vec<(String, String, Weight)> = graph.read_scores("Y", "U1", "U", false, 10.0, false, 0.0, false, 0, u32::MAX);
 
@@ -1918,4 +1952,47 @@ fn graph_empty() {
   }
 
   assert_eq!(res.len(), 0);
+}
+
+#[test]
+fn graph_removed_edge() {
+  let mut graph = AugMultiGraph::new();
+
+  graph.write_put_edge("", "U1", "B2", 1.0);
+  graph.write_put_edge("", "B2", "U1", 2.0);
+  graph.write_put_edge("", "B2", "C2", 1.0);
+  graph.write_put_edge("", "B2", "C3", 1.5);
+  graph.write_put_edge("", "B2", "C4", 3.0);
+
+  graph.write_delete_edge("", "U1", "B2");
+
+  let res : Vec<(String, String, Weight)> = graph.read_graph("", "U1", "B2", false, 0, 10000);
+
+  for x in res.iter() {
+    println!("{} -> {}: {}", x.0, x.1, x.2);
+  }
+
+  assert_eq!(res.len(), 1);
+}
+
+#[test]
+fn new_beacons() {
+  let mut graph = AugMultiGraph::new();
+
+  graph.write_put_edge("", "U1", "U2", 1.0);
+
+  assert_eq!(graph.read_unmarked_beacons("", "U1").len(), 0);
+
+  graph.write_put_edge("", "U1", "B3", 2.0);
+  graph.write_put_edge("", "U2", "B4", 3.0);
+
+  let beacons = graph.read_unmarked_beacons("", "U1");
+
+  assert_eq!(beacons.len(), 2);
+  assert_eq!(beacons[0].0, "B3");
+  assert_eq!(beacons[1].0, "B4");
+
+  graph.write_mark_beacons("", "U1");
+
+  assert_eq!(graph.read_unmarked_beacons("", "U1").len(), 0);
 }

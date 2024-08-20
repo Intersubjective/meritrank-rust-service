@@ -26,6 +26,8 @@ pub const CMD_CONNECTED        : &str = "connected";
 pub const CMD_EDGES            : &str = "edges";
 pub const CMD_MUTUAL_SCORES    : &str = "mutual_scores";
 pub const CMD_CREATE_CONTEXT   : &str = "create_context";
+pub const CMD_MARK_BEACONS     : &str = "mark_beacons";
+pub const CMD_UNMARKED_BEACONS : &str = "unmarked_beacons";
 
 #[derive(Clone)]
 pub struct Command {
