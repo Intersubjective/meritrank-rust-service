@@ -45,6 +45,25 @@ lazy_static::lazy_static! {
       .ok()
       .and_then(|s| s.parse::<usize>().ok())
       .unwrap_or(100);
+
+  pub static ref FILTER_NUM_HASHES : usize =
+    var("MERITRANK_FILTER_NUM_HASHES")
+      .ok()
+      .and_then(|s| s.parse::<usize>().ok())
+      .unwrap_or(10);
+
+  pub static ref FILTER_MIN_SIZE : usize =
+    var("MERITRANK_FILTER_MIN_SIZE")
+      .ok()
+      .and_then(|s| s.parse::<usize>().ok())
+      .and_then(|n| Some(std::cmp::max(n, 1)))
+      .unwrap_or(32);
+
+  pub static ref FILTER_MAX_SIZE : usize =
+    var("MERITRANK_FILTER_MAX_SIZE")
+      .ok()
+      .and_then(|s| s.parse::<usize>().ok())
+      .unwrap_or(8192);
 }
 
 //  ================================================================
@@ -64,9 +83,11 @@ pub enum NodeKind {
 
 #[derive(PartialEq, Eq, Clone, Default)]
 pub struct NodeInfo {
-  pub kind  : NodeKind,
-  pub name  : String,
-  pub marks : [u64; BLOOM_FILTER_SIZE],
+  pub kind       : NodeKind,
+  pub name       : String,
+
+  // Bloom filter of nodes marked as seen by this node
+  pub seen_nodes : Vec<u64>,
 }
 
 //  Augmented multi-context graph
@@ -90,27 +111,21 @@ pub struct AugMultiGraph {
 use std::hash::Hasher;
 use std::collections::hash_map::DefaultHasher;
 
-pub const BLOOM_FILTER_SIZE     : usize = 16;
-pub const BLOOM_FILTER_NUM_BITS : usize = 8;
-
 pub fn bloom_filter_bits(
-  context : &str,
-  name    : &str
-) -> [u64; BLOOM_FILTER_SIZE] {
-  let mut v : [u64; BLOOM_FILTER_SIZE] = Default::default();
+  size       : usize,
+  num_hashes : usize,
+  id         : usize
+) -> Vec<u64> {
+  let mut v : Vec<u64> = vec![];
+  v.resize(size, 0);
 
-  for n in 1..=BLOOM_FILTER_NUM_BITS {
-    let mut h0 = DefaultHasher::new();
-    h0.write(context.as_bytes());
-    let context_hash = h0.finish();
-
+  for n in 1..=num_hashes {
     let mut h = DefaultHasher::new();
     h.write_u16(n as u16);
-    h.write_u64(context_hash);
-    h.write(name.as_bytes());
+    h.write_u64(id as u64);
     let hash = h.finish();
 
-    let u64_index = ((hash / 64u64) as usize) % BLOOM_FILTER_SIZE;
+    let u64_index = ((hash / 64u64) as usize) % size;
     let bit_index =   hash % 64u64;
 
     v[u64_index] |= 1u64 << bit_index;
@@ -120,19 +135,29 @@ pub fn bloom_filter_bits(
 }
 
 pub fn bloom_filter_add(
-  mask : &mut [u64; BLOOM_FILTER_SIZE],
-  bits : &[u64; BLOOM_FILTER_SIZE]
+  mask : &mut [u64],
+  bits : &[u64]
 ) {
-  for i in 0..BLOOM_FILTER_SIZE {
+  if mask.len() != bits.len() {
+    log_error!("(bloom_filter_add) Invalid arguments");
+    return;
+  }
+
+  for i in 0..mask.len() {
     mask[i] |= bits[i];
   }
 }
 
 pub fn bloom_filter_contains(
-  mask : &mut [u64; BLOOM_FILTER_SIZE],
-  bits : &[u64; BLOOM_FILTER_SIZE]
+  mask : &[u64],
+  bits : &[u64]
 ) -> bool {
-  for i in 0..BLOOM_FILTER_SIZE {
+  if mask.len() != bits.len() {
+    log_error!("(bloom_filter_contains) Invalid arguments");
+    return false;
+  }
+
+  for i in 0..mask.len() {
     if (mask[i] & bits[i]) != bits[i] {
       return false;
     }
@@ -172,9 +197,9 @@ impl AugMultiGraph {
       node_count  : 0,
       node_infos  : Vec::new(),
       dummy_info  : NodeInfo {
-        kind  : NodeKind::Unknown,
-        name  : "".to_string(),
-        marks : Default::default(),
+        kind       : NodeKind::Unknown,
+        name       : "".to_string(),
+        seen_nodes : Default::default(),
       },
       dummy_graph : MeritRank::new(Graph::new()),
       node_ids    : HashMap::new(),
@@ -211,9 +236,9 @@ impl AugMultiGraph {
       _       => {
         log_error!("(node_info_from_id) Node does not exist: `{}`", node_id);
         self.dummy_info = NodeInfo {
-          kind  : NodeKind::Unknown,
-          name  : "".to_string(),
-          marks : Default::default(),
+          kind       : NodeKind::Unknown,
+          name       : "".to_string(),
+          seen_nodes : Default::default(),
         };
         &self.dummy_info
       },
@@ -445,9 +470,9 @@ impl AugMultiGraph {
       self.node_count += 1;
       self.node_infos.resize(self.node_count, NodeInfo::default());
       self.node_infos[node_id] = NodeInfo {
-        kind  : kind_from_name(&node_name),
-        name  : node_name.to_string(),
-        marks : Default::default(),
+        kind       : kind_from_name(&node_name),
+        name       : node_name.to_string(),
+        seen_nodes : Default::default(),
       };
       self.node_ids.insert(node_name.to_string(), node_id);
     }
@@ -457,7 +482,7 @@ impl AugMultiGraph {
         continue;
       }
 
-      log_verbose!("Add node in `{}`: {}", context, node_id);
+      log_verbose!("Add node in `{}`: {}", context, node_name);
 
       //  HACK!!!
       while graph.get_new_nodeid() < node_id {}
@@ -1122,70 +1147,158 @@ impl AugMultiGraph {
     self.reset();
   }
 
-  pub fn write_mark_beacons(
+  pub fn read_new_edges_filter(
     &mut self,
-    context   : &str,
     src       : &str
-  ) {
-    log_info!("CMD write_mark_beacons: `{}` `{}`", context, src);
-
-    let src_id = self.find_or_add_node_by_name(src);
-    let mark   = bloom_filter_bits(context, src);
-
-    for beacon_id in 0..self.node_count {
-      if self.node_infos[beacon_id].kind != NodeKind::Beacon {
-        continue;
-      }
-
-      if self.get_score_or_recalculate(context, src_id, beacon_id) < EPSILON {
-        continue;
-      }
-
-      bloom_filter_add(&mut self.node_infos[beacon_id].marks, &mark);
-    }
-  }
-
-  pub fn read_unmarked_beacons(
-    &mut self,
-    context   : &str,
-    src       : &str
-  ) -> Vec<(String, Weight)> {
-    log_info!("CMD read_unmarked_beacons: `{}` `{}`", context, src);
-
-    if !self.contexts.contains_key(context) {
-      log_error!("(read_unmarked_beacons) Context does not exist: `{}`", context);
-      return vec![];
-    }
+  ) -> Vec<u8> {
+    log_info!("CMD read_new_edges_filter: `{}`", src);
 
     if !self.node_exists(src) {
-      log_error!("(read_unmarked_beacons) Node does not exist: `{}`", src);
+      log_error!("(read_new_edges_filter) Node does not exist: `{}`", src);
       return vec![];
     }
 
     let src_id = self.find_or_add_node_by_name(src);
-    let mark   = bloom_filter_bits(context, src);
 
-    let mut v = vec![];
+    let mut v : Vec<u8> = vec![];
+    v.reserve_exact(self.node_infos[src_id].seen_nodes.len() * 8);
 
-    for beacon_id in 0..self.node_count {
-      if self.node_infos[beacon_id].kind != NodeKind::Beacon {
+    for &x in &self.node_infos[src_id].seen_nodes {
+      for i in 0..8 {
+        v.push((x & (0xff << (8 * i)) >> (8 * i)) as u8);
+      }
+    }
+
+    return v;
+  }
+
+  pub fn write_new_edges_filter(
+    &mut self,
+    src          : &str,
+    filter_bytes : &[u8]
+  ) {
+    log_info!("CMD write_new_edges_filter: `{}` {:?}", src, filter_bytes);
+
+    let src_id = self.find_or_add_node_by_name(src);
+
+    let mut v : Vec<u64> = vec![];
+    v.resize(((filter_bytes.len() + 7) / 8) * 8, 0);
+
+    for i in 0..filter_bytes.len() {
+      v[i / 8] = (filter_bytes[i] as u64) << (8 * (i % 8));
+    }
+
+    self.node_infos[src_id].seen_nodes = v;
+  }
+
+  pub fn write_fetch_new_edges(
+    &mut self,
+    src     : &str,
+    prefix  : &str
+  ) -> Vec<(String, Weight)> {
+    log_info!("CMD write_fetch_new_edges: `{}` `{}`", src, prefix);
+
+    let num_hashes = *FILTER_NUM_HASHES;
+    let max_size   = *FILTER_MAX_SIZE / 8;
+
+    let src_id = self.find_or_add_node_by_name(src);
+
+    if self.node_infos[src_id].seen_nodes.is_empty() {
+      self.node_infos[src_id].seen_nodes.resize((*FILTER_MIN_SIZE + 7) / 8, 0);
+
+      log_verbose!("Create the bloom filter with {} bytes for `{}`", 8 * self.node_infos[src_id].seen_nodes.len(), src);
+    }
+
+    //  Fetch new edges
+    //
+
+    let mut v : Vec<(String, Weight)> = vec![];
+
+    for dst_id in 0..self.node_count {
+      //  FIXME Probably we should use NodeKind here.
+      if !self.node_infos[dst_id].name.starts_with(prefix) {
         continue;
       }
 
-      let score = self.get_score_or_recalculate(context, src_id, beacon_id);
+      let score = self.get_score_or_recalculate("", src_id, dst_id);
 
       if score < EPSILON {
         continue;
       }
 
-      if !bloom_filter_contains(&mut self.node_infos[beacon_id].marks, &mark) {
-        v.push((self.node_infos[beacon_id].name.clone(), score));
+      let bits = bloom_filter_bits(self.node_infos[src_id].seen_nodes.len(), num_hashes, dst_id);
+
+      if !bloom_filter_contains(&self.node_infos[src_id].seen_nodes, &bits) {
+        v.push((self.node_infos[dst_id].name.clone(), score));
+      } 
+    }
+
+    //  Rebuild the bloom filter
+    //
+
+    let mut seen_nodes = vec![];
+
+    seen_nodes.resize(std::cmp::min(self.node_infos[src_id].seen_nodes.len(), max_size), 0);
+
+    loop {
+      let mut saturated = false;
+
+      for x in seen_nodes.iter_mut() {
+        *x = 0;
+      }
+
+      for dst_id in 0..self.node_count {
+        let bits      = bloom_filter_bits(seen_nodes.len(), num_hashes, dst_id);
+        let collision = bloom_filter_contains(&mut seen_nodes, &bits);
+
+        if collision && seen_nodes.len() < max_size {
+          //  Resize the bloom filter if it is saturated
+
+          let n = seen_nodes.len() * 2;
+          seen_nodes.resize(n, 0);
+
+          log_verbose!("Resize the bloom filter to {} bytes for `{}`", 8 * n, src);
+
+          saturated = true;
+          break;
+        }
+
+        //  FIXME Probably we should use NodeKind here.
+        if self.node_infos[dst_id].name.starts_with(prefix) {
+          let score = self.get_score_or_recalculate("", src_id, dst_id);
+
+          if !(score < EPSILON) {
+            bloom_filter_add(&mut seen_nodes, &bits);
+          }
+        } else {
+          //  RUST!!!
+          let len = self.node_infos[src_id].seen_nodes.len();
+
+          let already_seen = bloom_filter_contains(
+            &mut self.node_infos[src_id].seen_nodes,
+            &bloom_filter_bits(len, num_hashes, dst_id)
+          );
+
+          if already_seen {
+            bloom_filter_add(&mut seen_nodes, &bits);
+          }
+        }
+      }
+
+      if !saturated {
+        if seen_nodes.len() >= max_size {
+          log_warning!("Max bloom filer size is reached for `{}`", src);
+        }
+
+        self.node_infos[src_id].seen_nodes = seen_nodes;
+        break;
       }
     }
 
-    v.sort_by(|(_, a), (_, b)| b.total_cmp(a));
+    //  Return fetched edges
+    //
 
-    v
+    return v;
   }
 }
 
@@ -1290,11 +1403,10 @@ impl AugMultiGraph {
 
     reduced
       .iter()
-      .filter(|(source, target, _weight)|
-        *source != zero && *target != zero
+      .filter(|(source, target, weight)|
+        *source != zero && *target != zero && !(*weight > -EPSILON && *weight < EPSILON)
       )
       .for_each(|(source, target, _weight)| {
-        // TODO: check weight
         pr.add_edge(*source, *target);
       });
 
@@ -1324,12 +1436,12 @@ impl AugMultiGraph {
   pub fn write_recalculate_zero(&mut self) {
     log_info!("CMD write_recalculate_zero");
 
-    self.recalculate_all(0); // FIXME Ad hok hack
+    self.recalculate_all(0); // FIXME Ad hok PERF hack
     self.delete_from_zero();
 
     let nodes = self.top_nodes();
 
-    self.recalculate_all(0); // FIXME Ad hok hack
+    self.recalculate_all(0); // FIXME Ad hok PERF hack
     {
       let zero = self.find_or_add_node_by_name(ZERO_NODE.as_str());
 
@@ -1340,6 +1452,6 @@ impl AugMultiGraph {
         self.set_edge("", zero, *node_id, *amount);
       }
     }
-    self.recalculate_all(*NUM_WALK); // FIXME Ad hok hack
+    self.recalculate_all(*NUM_WALK); // FIXME Ad hok PERF hack
   }
 }

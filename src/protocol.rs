@@ -8,12 +8,15 @@ use crate::log_error;
 use crate::log::*;
 
 //  No context
-pub const CMD_VERSION          : &str = "version";
-pub const CMD_LOG_LEVEL        : &str = "log_level";
-pub const CMD_SYNC             : &str = "sync";
-pub const CMD_RESET            : &str = "reset";
-pub const CMD_RECALCULATE_ZERO : &str = "recalculate_zero";
-pub const CMD_NODE_LIST        : &str = "node_list";
+pub const CMD_VERSION                : &str = "version";
+pub const CMD_LOG_LEVEL              : &str = "log_level";
+pub const CMD_SYNC                   : &str = "sync";
+pub const CMD_RESET                  : &str = "reset";
+pub const CMD_RECALCULATE_ZERO       : &str = "recalculate_zero";
+pub const CMD_NODE_LIST              : &str = "node_list";
+pub const CMD_READ_NEW_EDGES_FILTER  : &str = "read_new_edges_filter";
+pub const CMD_WRITE_NEW_EDGES_FILTER : &str = "write_new_edges_filter";
+pub const CMD_FETCH_NEW_EDGES        : &str = "fetch_new_edges";
 
 //  With context
 pub const CMD_NODE_SCORE       : &str = "node_score";
@@ -26,8 +29,6 @@ pub const CMD_CONNECTED        : &str = "connected";
 pub const CMD_EDGES            : &str = "edges";
 pub const CMD_MUTUAL_SCORES    : &str = "mutual_scores";
 pub const CMD_CREATE_CONTEXT   : &str = "create_context";
-pub const CMD_MARK_BEACONS     : &str = "mark_beacons";
-pub const CMD_UNMARKED_BEACONS : &str = "unmarked_beacons";
 
 #[derive(Clone)]
 pub struct Command {

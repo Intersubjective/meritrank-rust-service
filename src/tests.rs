@@ -1976,23 +1976,49 @@ fn graph_removed_edge() {
 }
 
 #[test]
-fn new_beacons() {
+fn new_edges_fetch() {
   let mut graph = AugMultiGraph::new();
 
   graph.write_put_edge("", "U1", "U2", 1.0);
 
-  assert_eq!(graph.read_unmarked_beacons("", "U1").len(), 0);
+  assert_eq!(graph.write_fetch_new_edges("U1", "B").len(), 0);
 
   graph.write_put_edge("", "U1", "B3", 2.0);
   graph.write_put_edge("", "U2", "B4", 3.0);
 
-  let beacons = graph.read_unmarked_beacons("", "U1");
+  let beacons = graph.write_fetch_new_edges("U1", "B");
 
   assert_eq!(beacons.len(), 2);
   assert_eq!(beacons[0].0, "B3");
   assert_eq!(beacons[1].0, "B4");
 
-  graph.write_mark_beacons("", "U1");
+  assert_eq!(graph.write_fetch_new_edges("U1", "B").len(), 0);
+}
 
-  assert_eq!(graph.read_unmarked_beacons("", "U1").len(), 0);
+#[test]
+fn new_edges_filter() {
+  let mut graph = AugMultiGraph::new();
+
+  graph.write_put_edge("", "U1", "U2", 1.0);
+
+  assert_eq!(graph.write_fetch_new_edges("U1", "B").len(), 0);
+
+  graph.write_put_edge("", "U1", "B3", 2.0);
+  graph.write_put_edge("", "U2", "B4", 3.0);
+
+  let filter = graph.read_new_edges_filter("U1");
+  assert_eq!(filter.len(), 32);
+
+  let beacons = graph.write_fetch_new_edges("U1", "B");
+
+  assert_eq!(beacons.len(), 2);
+  assert_eq!(beacons[0].0, "B3");
+  assert_eq!(beacons[1].0, "B4");
+
+  graph.write_new_edges_filter("U1", &filter);
+  let beacons = graph.write_fetch_new_edges("U1", "B");
+
+  assert_eq!(beacons.len(), 2);
+  assert_eq!(beacons[0].0, "B3");
+  assert_eq!(beacons[1].0, "B4");
 }

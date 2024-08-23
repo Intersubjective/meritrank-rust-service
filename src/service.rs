@@ -8,13 +8,14 @@ use std::{
 use nng::{Aio, AioResult, Context, Protocol, Socket};
 
 use crate::log_error;
-//use crate::log_warning;
+use crate::log_warning;
 use crate::log_info;
-//use crate::log_verbose;
+// use crate::log_verbose;
 use crate::log_trace;
 use crate::log::*;
 use crate::protocol::*;
 use crate::operations::*;
+use std::time::SystemTime;
 
 pub use meritrank::Weight;
 
@@ -30,14 +31,13 @@ lazy_static::lazy_static! {
       .unwrap_or("tcp://127.0.0.1:10234".to_string());
 }
 
-#[derive(Clone)]
 pub struct Data {
-  pub graph_readable : Arc<Mutex<AugMultiGraph>>,
-  pub graph_writable : Arc<Mutex<AugMultiGraph>>,
-  pub queue_commands : Arc<Mutex<Vec<Command>>>,
-  pub write_sync     : Arc<Mutex<()>>,
-  pub cond_add       : Arc<Condvar>,
-  pub cond_done      : Arc<Condvar>,
+  pub graph_readable : Mutex<AugMultiGraph>,
+  pub graph_writable : Mutex<AugMultiGraph>,
+  pub queue_commands : Mutex<Vec<Command>>,
+  pub write_sync     : Mutex<()>,
+  pub cond_add       : Condvar,
+  pub cond_done      : Condvar,
 }
 
 fn perform_command(
@@ -46,13 +46,14 @@ fn perform_command(
 ) -> Result<Vec<u8>, ()> {
   log_trace!("perform_command");
 
-  if command.id == CMD_RESET            ||
-     command.id == CMD_RECALCULATE_ZERO ||
-     command.id == CMD_DELETE_EDGE      ||
-     command.id == CMD_DELETE_NODE      ||
-     command.id == CMD_PUT_EDGE         ||
-     command.id == CMD_CREATE_CONTEXT   ||
-     command.id == CMD_MARK_BEACONS
+  if command.id == CMD_RESET                  ||
+     command.id == CMD_RECALCULATE_ZERO       ||
+     command.id == CMD_DELETE_EDGE            ||
+     command.id == CMD_DELETE_NODE            ||
+     command.id == CMD_PUT_EDGE               ||
+     command.id == CMD_CREATE_CONTEXT         ||
+     command.id == CMD_WRITE_NEW_EDGES_FILTER ||
+     command.id == CMD_FETCH_NEW_EDGES
   {
     //  Write commands
 
@@ -95,9 +96,14 @@ fn perform_command(
           graph.write_create_context(command.context.as_str());
         }
       },
-      CMD_MARK_BEACONS => {
-        if let Ok(src) = rmp_serde::from_slice(command.payload.as_slice()) {
-          graph.write_mark_beacons(command.context.as_str(), src);
+      CMD_WRITE_NEW_EDGES_FILTER => {
+        if let Ok((src, filter)) = rmp_serde::from_slice(command.payload.as_slice()) {
+          graph.write_new_edges_filter(src, filter);
+        }
+      },
+      CMD_FETCH_NEW_EDGES => {
+        if let Ok((src, prefix)) = rmp_serde::from_slice(command.payload.as_slice()) {
+          graph.write_fetch_new_edges(src, prefix);
         }
       },
       _ => {},
@@ -180,9 +186,9 @@ fn perform_command(
           return encode_response(&graph.read_mutual_scores(command.context.as_str(), ego));
         }
       },
-      CMD_UNMARKED_BEACONS => {
+      CMD_READ_NEW_EDGES_FILTER => {
         if let Ok(src) = rmp_serde::from_slice(command.payload.as_slice()) {
-          return encode_response(&graph.read_unmarked_beacons(command.context.as_str(), src));
+          return encode_response(&graph.read_new_edges_filter(src));
         }
       },
       _ => {
@@ -196,7 +202,7 @@ fn perform_command(
   Err(())
 }
 
-fn command_queue_thread(data : Data) {
+fn command_queue_thread(data : &Data) {
   let mut queue = data.queue_commands.lock().expect("Mutex lock failed");
   loop {
     log_trace!("command_queue_thread (loop)");
@@ -208,8 +214,14 @@ fn command_queue_thread(data : Data) {
     std::mem::drop(queue);
 
     for cmd in commands {
-      let _ = perform_command(&data, cmd.clone());
+      let begin    = SystemTime::now();
+      let _        = perform_command(&data, cmd.clone());
+      let duration = SystemTime::now().duration_since(begin).unwrap().as_secs();
+
       log_trace!("perform_command - done");
+      if duration > 5 {
+        log_warning!("Command was done in {} seconds", duration);
+      }
     }
 
     std::mem::drop(write);
@@ -237,7 +249,7 @@ fn put_for_write(
 }
 
 fn decode_and_handle_request(
-  data    : Data,
+  data    : &Data,
   request : &[u8]
 ) -> Result<Vec<u8>, ()> {
   log_trace!("decode_and_handle_request");
@@ -251,11 +263,14 @@ fn decode_and_handle_request(
   }
 
   if !command.context.is_empty() && (
-    command.id == CMD_VERSION          ||
-    command.id == CMD_LOG_LEVEL        ||
-    command.id == CMD_RESET            ||
-    command.id == CMD_RECALCULATE_ZERO ||
-    command.id == CMD_NODE_LIST
+    command.id == CMD_VERSION                ||
+    command.id == CMD_LOG_LEVEL              ||
+    command.id == CMD_RESET                  ||
+    command.id == CMD_RECALCULATE_ZERO       ||
+    command.id == CMD_NODE_LIST              ||
+    command.id == CMD_READ_NEW_EDGES_FILTER  ||
+    command.id == CMD_WRITE_NEW_EDGES_FILTER ||
+    command.id == CMD_FETCH_NEW_EDGES
   ) {
     log_error!("(decode_and_handle_request) Context should be empty");
     return Err(())
@@ -265,14 +280,21 @@ fn decode_and_handle_request(
     put_for_write(&data, command);
     encode_response(&())
   } else {
-    let res = perform_command(&data, command);
+    let begin    = SystemTime::now();
+    let res      = perform_command(&data, command);
+    let duration = SystemTime::now().duration_since(begin).unwrap().as_secs();
+
     log_trace!("perform_command - done");
+    if duration > 5 {
+      log_warning!("Command was done in {} seconds", duration);
+    }
+
     res
   }
 }
 
 fn worker_callback(
-  data : Data,
+  data : &Data,
   aio  : Aio,
   ctx  : &Context,
   res  : AioResult
@@ -327,19 +349,19 @@ pub fn main_async(threads : usize) -> Result<(), ()> {
   log_info!("Starting server {} at {}, {} threads", VERSION, *SERVICE_URL, threads);
   log_info!("NUM_WALK={}", *NUM_WALK);
 
-  let data = Data {
-    graph_readable : Arc::<Mutex<AugMultiGraph>>::new(Mutex::<AugMultiGraph>::new(AugMultiGraph::new())),
-    graph_writable : Arc::<Mutex<AugMultiGraph>>::new(Mutex::<AugMultiGraph>::new(AugMultiGraph::new())),
-    queue_commands : Arc::<Mutex<Vec<Command>>>::new(Mutex::<Vec<Command>>::new(vec![])),
-    write_sync     : Arc::<Mutex<()>>::new(Mutex::<()>::new(())),
-    cond_add       : Arc::<Condvar>::new(Condvar::new()),
-    cond_done      : Arc::<Condvar>::new(Condvar::new()),
-  };
+  let data = Arc::<Data>::new(Data {
+    graph_readable : Mutex::<AugMultiGraph>::new(AugMultiGraph::new()),
+    graph_writable : Mutex::<AugMultiGraph>::new(AugMultiGraph::new()),
+    queue_commands : Mutex::<Vec<Command>>::new(vec![]),
+    write_sync     : Mutex::<()>::new(()),
+    cond_add       : Condvar::new(),
+    cond_done      : Condvar::new(),
+  });
 
   let data_cloned = data.clone();
 
   std::thread::spawn(move || {
-    command_queue_thread(data_cloned);
+    command_queue_thread(&data_cloned);
   });
 
   let s = match Socket::new(Protocol::Rep0) {
@@ -359,7 +381,7 @@ pub fn main_async(threads : usize) -> Result<(), ()> {
 
         let aio = Aio::new(move |aio, res| {
           worker_callback(
-            data_cloned.clone(),
+            &data_cloned.clone(),
             aio,
             &ctx_cloned,
             res
