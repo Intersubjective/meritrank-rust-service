@@ -55,6 +55,8 @@ fn perform_command(
      command.id == CMD_WRITE_NEW_EDGES_FILTER ||
      command.id == CMD_FETCH_NEW_EDGES
   {
+    let mut res = encode_response(&());
+
     //  Write commands
 
     let mut graph = match data.graph_writable.lock() {
@@ -65,60 +67,75 @@ fn perform_command(
       },
     };
 
+    let mut ok = false;
+
     match command.id.as_str() {
       CMD_RESET => {
         if let Ok(()) = rmp_serde::from_slice(command.payload.as_slice()) {
+          ok = true;
           graph.write_reset();
         }
       },
       CMD_RECALCULATE_ZERO => {
         if let Ok(()) = rmp_serde::from_slice(command.payload.as_slice()) {
+          ok = true;
           graph.write_recalculate_zero();
         }
       },
       CMD_DELETE_EDGE => {
         if let Ok((src, dst)) = rmp_serde::from_slice(command.payload.as_slice()) {
+          ok = true;
           graph.write_delete_edge(command.context.as_str(), src, dst);
         }
       },
       CMD_DELETE_NODE => {
         if let Ok(node) = rmp_serde::from_slice(command.payload.as_slice()) {
+          ok = true;
           graph.write_delete_node(command.context.as_str(), node);
         }
       },
       CMD_PUT_EDGE => {
         if let Ok((src, dst, amount)) = rmp_serde::from_slice(command.payload.as_slice()) {
+          ok = true;
           graph.write_put_edge(command.context.as_str(), src, dst, amount);
         }
       },
       CMD_CREATE_CONTEXT => {
         if let Ok(()) = rmp_serde::from_slice(command.payload.as_slice()) {
+          ok = true;
           graph.write_create_context(command.context.as_str());
         }
       },
       CMD_WRITE_NEW_EDGES_FILTER => {
         if let Ok((src, filter)) = rmp_serde::from_slice(command.payload.as_slice()) {
-          graph.write_new_edges_filter(src, filter);
+          ok = true;
+          let v : Vec<u8> = filter;
+          graph.write_new_edges_filter(src, &v);
         }
       },
       CMD_FETCH_NEW_EDGES => {
         if let Ok((src, prefix)) = rmp_serde::from_slice(command.payload.as_slice()) {
-          graph.write_fetch_new_edges(src, prefix);
+          ok = true;
+          res = encode_response(&graph.write_fetch_new_edges(src, prefix));
         }
       },
-      _ => {},
+      _ => {
+        log_error!("(perform_command) Unexpected command `{}`", command.id);
+      },
     };
     match data.graph_readable.lock() {
       Ok(ref mut x) => {
         x.copy_from(graph.deref_mut());
-      }
+      },
       Err(e) => {
         log_error!("(perform_command) {}", e);
         return Err(());
       },
     };
 
-    return encode_response(&());
+    if ok {
+      return res;
+    }
   } else if command.id == CMD_SYNC {
     if let Ok(()) = rmp_serde::from_slice(command.payload.as_slice()) {
       let mut queue = data.queue_commands.lock().expect("Mutex lock failed");

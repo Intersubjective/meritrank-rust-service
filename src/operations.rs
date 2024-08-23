@@ -121,7 +121,7 @@ pub fn bloom_filter_bits(
 
   for n in 1..=num_hashes {
     let mut h = DefaultHasher::new();
-    h.write_u16(n as u16);
+    h.write_u16( n as u16);
     h.write_u64(id as u64);
     let hash = h.finish();
 
