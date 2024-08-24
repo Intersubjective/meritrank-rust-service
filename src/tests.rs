@@ -1972,7 +1972,7 @@ fn graph_removed_edge() {
     println!("{} -> {}: {}", x.0, x.1, x.2);
   }
 
-  assert_eq!(res.len(), 1);
+  assert_eq!(res.len(), 0);
 }
 
 #[test]

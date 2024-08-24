@@ -904,8 +904,10 @@ impl AugMultiGraph {
         log_trace!("path found");
       } else if status == Status::FAIL {
         log_error!("(read_graph) Path does not exist from {} to {}", ego_id, focus_id);
+        return vec![];
       } else {
         log_error!("(read_graph) Unable to find a path from {} to {}", ego_id, focus_id);
+        return vec![];
       }
 
       let mut ego_to_focus : Vec<NodeId> = vec![];
