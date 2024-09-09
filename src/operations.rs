@@ -245,6 +245,14 @@ impl AugMultiGraph {
     }
   }
 
+  pub fn is_user_edge(
+    &mut self,
+    src : NodeId,
+    dst : NodeId) -> bool {
+    return self.node_info_from_id(src).kind == NodeKind::User &&
+           self.node_info_from_id(dst).kind == NodeKind::User;
+  }
+
   pub fn create_context(&mut self, context : &str) {
     log_trace!("create_context: `{}`", context);
 
@@ -265,12 +273,12 @@ impl AugMultiGraph {
           let all_nodes   = zero_cloned.graph.nodes.iter().enumerate();
 
           for (src_id, src) in all_nodes {
-            if self.node_info_from_id(src_id).kind == NodeKind::User {
-              let all_edges =
-                        src.pos_edges.iter()
-                .chain( src.neg_edges.iter() );
+            let all_edges =
+                      src.pos_edges.iter()
+              .chain( src.neg_edges.iter() );
 
-              for (dst_id, weight) in all_edges {
+            for (dst_id, weight) in all_edges {
+              if self.is_user_edge(src_id, *dst_id) {
                 graph.set_edge(src_id, *dst_id, *weight);
               }
             }
@@ -500,7 +508,7 @@ impl AugMultiGraph {
   ) {
     log_trace!("set_edge: `{}` `{}` `{}` {}", context, src, dst, amount);
 
-    if self.node_info_from_id(src).kind == NodeKind::User {
+    if self.is_user_edge(src, dst) {
       //  Create context if does not exist
 
       self.graph_from("");

@@ -1472,6 +1472,38 @@ fn null_context_contains_all_users() {
   assert_eq!(edges, edges_expected);
 }
 
+
+#[test]
+fn user_edges_dup() {
+  let mut graph = AugMultiGraph::new();
+
+  graph.write_put_edge("X", "U1", "U2", 1.0);
+  graph.write_put_edge("X", "U1", "U3", 2.0);
+  graph.create_context("Y");
+
+  let edges : Vec<(String, String, Weight)> = graph.read_edges("Y");
+
+  let edges_expected : Vec<(String, String, Weight)> = vec![
+    ("U1".to_string(), "U2".to_string(), 1.0),
+    ("U1".to_string(), "U3".to_string(), 2.0),
+  ];
+
+  assert_eq!(edges, edges_expected);
+}
+
+#[test]
+fn non_user_edges_no_dup() {
+  let mut graph = AugMultiGraph::new();
+
+  graph.write_put_edge("X", "U1", "C2", 1.0);
+  graph.write_put_edge("X", "U1", "C3", 2.0);
+  graph.create_context("Y");
+
+  let edges : Vec<(String, String, Weight)> = graph.read_edges("Y");
+
+  assert_eq!(edges.len(), 0);
+}
+
 #[test]
 fn delete_contexted_edge() {
   let mut graph = AugMultiGraph::new();
