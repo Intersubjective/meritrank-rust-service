@@ -253,8 +253,13 @@ impl AugMultiGraph {
            self.node_info_from_id(dst).kind == NodeKind::User;
   }
 
-  pub fn create_context(&mut self, context : &str) {
-    log_trace!("create_context: `{}`", context);
+  pub fn create_context_if_does_not_exist(&mut self, context : &str) {
+    log_trace!("create_context_if_does_not_exist: `{}`", context);
+
+    if self.contexts.contains_key(context) {
+      log_verbose!("Context already exists: `{}`", context);
+      return;
+    }
 
     log_verbose!("Add context: `{}`", context);
 
@@ -295,9 +300,7 @@ impl AugMultiGraph {
   pub fn graph_from(&mut self, context : &str) -> &mut MeritRank {
     log_trace!("graph_from: `{}`", context);
 
-    if !self.contexts.contains_key(context) {
-      self.create_context(context);
-    }
+    self.create_context_if_does_not_exist(context);
 
     match self.contexts.get_mut(context) {
       Some(x) => x,
@@ -697,7 +700,7 @@ impl AugMultiGraph {
 
   pub fn write_create_context(&mut self, context : &str) {
     log_info!("CMD write_create_context: `{}`", context);
-    self.create_context(context);
+    self.create_context_if_does_not_exist(context);
   }
 
   pub fn write_put_edge(

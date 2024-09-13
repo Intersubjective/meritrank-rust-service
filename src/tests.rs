@@ -1362,9 +1362,9 @@ fn recalculate_zero_reset_perf() {
   graph.write_recalculate_zero();
   graph.reset();
   put_testing_edges(&mut graph, "");
-  graph.create_context("X");
-  graph.create_context("Y");
-  graph.create_context("Z");
+  graph.write_create_context("X");
+  graph.write_create_context("Y");
+  graph.write_create_context("Z");
   graph.write_recalculate_zero();
 
   let begin    = SystemTime::now();
@@ -1479,7 +1479,7 @@ fn user_edges_dup() {
 
   graph.write_put_edge("X", "U1", "U2", 1.0);
   graph.write_put_edge("X", "U1", "U3", 2.0);
-  graph.create_context("Y");
+  graph.write_create_context("Y");
 
   let edges : Vec<(String, String, Weight)> = graph.read_edges("Y");
 
@@ -1497,7 +1497,7 @@ fn non_user_edges_no_dup() {
 
   graph.write_put_edge("X", "U1", "C2", 1.0);
   graph.write_put_edge("X", "U1", "C3", 2.0);
-  graph.create_context("Y");
+  graph.write_create_context("Y");
 
   let edges : Vec<(String, String, Weight)> = graph.read_edges("Y");
 
@@ -1631,7 +1631,7 @@ fn scores_self() {
   graph.write_put_edge("X", "B1", "B2", 2.0);
   graph.write_put_edge("X", "B1", "B3", 1.0);
   graph.write_put_edge("X", "B2", "U1", 3.0);
-  graph.create_context("Y");
+  graph.write_create_context("Y");
 
   let res : Vec<(String, String, Weight)> = graph.read_scores("Y", "U1", "U", false, 10.0, false, 0.0, false, 0, u32::MAX);
 
@@ -2053,4 +2053,37 @@ fn new_edges_filter() {
   assert_eq!(beacons.len(), 2);
   assert_eq!(beacons[0].0, "B3");
   assert_eq!(beacons[1].0, "B4");
+}
+
+#[test]
+fn copy_user_edges_into_context() {
+  let mut graph = AugMultiGraph::new();
+
+  graph.write_put_edge("X", "U1", "U2", 1.0);
+  graph.write_put_edge("X", "U1", "C2", 2.0);
+  graph.write_create_context("Y");
+
+  let edges : Vec<(String, String, Weight)> = graph.read_edges("Y");
+
+  assert_eq!(edges.len(), 1);
+  assert_eq!(edges[0].0, "U1");
+  assert_eq!(edges[0].1, "U2");
+  assert!(edges[0].2 > 0.999);
+  assert!(edges[0].2 < 1.001);
+}
+
+#[test]
+fn context_already_exist() {
+  let mut graph = AugMultiGraph::new();
+
+  graph.write_put_edge("X", "U1", "C2", 1.0);
+  graph.write_create_context("X");
+
+  let edges : Vec<(String, String, Weight)> = graph.read_edges("X");
+
+  assert_eq!(edges.len(), 1);
+  assert_eq!(edges[0].0, "U1");
+  assert_eq!(edges[0].1, "C2");
+  assert!(edges[0].2 > 0.999);
+  assert!(edges[0].2 < 1.001);
 }
