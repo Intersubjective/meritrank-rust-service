@@ -1366,7 +1366,7 @@ impl AugMultiGraph {
         .flatten()
         .collect();
 
-    let result : Vec<(NodeId, NodeId, f64)> =
+    let result : Vec<(NodeId, NodeId, Weight)> =
       edges
         .into_iter()
         .map(|(ego_id, dst_id, weight)| {
