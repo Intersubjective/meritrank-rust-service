@@ -313,7 +313,7 @@ impl AugMultiGraph {
 
   pub fn edge_weight(&mut self, context : &str, src : NodeId, dst : NodeId) -> Weight {
     log_trace!("edge_weight: `{}` {} {}", context, src, dst);
-    *self.graph_from(context).graph.edge_weight(src, dst).unwrap_or(None).unwrap_or(&0.0)
+    self.graph_from(context).graph.edge_weight(src, dst).unwrap_or(None).unwrap_or(0.0)
   }
 
   pub fn edge_weight_normalized(&mut self, context : &str, src : NodeId, dst : NodeId) -> Weight {
@@ -332,7 +332,7 @@ impl AugMultiGraph {
       None => 1.0
     };
 
-    graph.graph.edge_weight(src, dst).unwrap_or(None).unwrap_or(&0.0) / pos_sum
+    graph.graph.edge_weight(src, dst).unwrap_or(None).unwrap_or(0.0) / pos_sum
   }
 
   pub fn all_neighbors(&mut self, context : &str, node : NodeId) -> Vec<(NodeId, Weight)> {
